@@ -1,0 +1,38 @@
+# Maskinsjekk stack: MQTT broker + Go ingest/HTTP service.
+# Bring up with:  docker compose up -d --build
+# Host ports are overridable (e.g. MQTT_PORT=1884 HTTP_PORT=8081) so this can
+# run next to another stack on the same demo laptop.
+name: maskinsjekk
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  maskinsjekk:
+    build:
+      context: ../server
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      MQTT_URL: "tcp://mosquitto:1883"
+      MQTT_TOPIC: "hsd/+/+/+"
+      DB_PATH: "/data/maskinsjekk.db"
+      MACHINES_PATH: "/config/machines.json"
+      AUTO_REGISTER: "true"
+      RAW_RETENTION: "168h"
+      STALE_THRESHOLD: "30s"
+    volumes:
+      - maskinsjekkdb:/data
+      - ./config:/config:ro
+
+volumes:
+  maskinsjekkdb:

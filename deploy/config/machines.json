@@ -1,0 +1,24 @@
+{
+  "sites": [
+    {
+      "id": "demo",
+      "name": "HSD Demo",
+      "machines": [
+        {
+          "id": "printer-1",
+          "name": "3D-printer",
+          "sensors": [
+            { "id": "esp32-1", "kind": "esp32-vibration" }
+          ]
+        },
+        {
+          "id": "sim-printer",
+          "name": "Simulert maskin",
+          "sensors": [
+            { "id": "esp32-1", "kind": "simulator" }
+          ]
+        }
+      ]
+    }
+  ]
+}

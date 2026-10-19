@@ -1,0 +1,40 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Coverage / test artifacts
+*.out
+coverage.*
+*.coverprofile
+
+# Go workspace
+go.work
+go.work.sum
+
+# env files
+.env
+
+# SQLite database + WAL/shared-memory sidecars
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# Go build output (the compiled server binary; NOT the cmd/maskinsjekk source dir)
+/server/maskinsjekk
+/tools/simulator/simulator
+
+# Firmware secrets, should anyone add them (config belongs in NVS)
+secrets.h
+
+# Claude Code local state
+.claude/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp

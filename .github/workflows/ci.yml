@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint, vet & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: |
+            server/go.sum
+            tools/simulator/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l server tools)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet (server)
+        working-directory: server
+        run: go vet ./...
+
+      - name: staticcheck (server)
+        working-directory: server
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      - name: Unit tests with race + coverage (server)
+        working-directory: server
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        working-directory: server
+        run: go tool cover -func=coverage.out | tail -n 1
+
+      - name: Fuzz the MQTT parser (short)
+        working-directory: server
+        run: go test -run='^$' -fuzz=FuzzParseSensorMessage -fuzztime=30s ./internal/ingest
+
+      - name: Build & vet simulator
+        working-directory: tools/simulator
+        run: |
+          go vet ./...
+          go build ./...
+
+  integration:
+    name: Integration (testcontainers + Mosquitto)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: server/go.sum
+
+      # ubuntu-latest runners ship with Docker, which testcontainers needs.
+      - name: Integration tests
+        working-directory: server
+        run: go test -tags integration -count=1 -timeout 5m ./internal/integration/...
+
+  docker:
+    name: Docker image build & smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build & start stack
+        working-directory: deploy
+        run: docker compose up -d --build
+
+      - name: Wait for /healthz and configured machines
+        working-directory: deploy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/healthz; then
+              echo; curl -fsS http://localhost:8080/machines | grep -q '"printer-1"' && echo "machines OK" && exit 0
+            fi
+            sleep 1
+          done
+          echo "service never became healthy"; docker compose logs; exit 1
+
+      - name: Tear down
+        if: always()
+        working-directory: deploy
+        run: docker compose down -v
+
+  firmware:
+    name: Firmware build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install arduino-cli
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR="$HOME/bin" sh
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Install ESP32 core + libraries
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+          arduino-cli lib install "PubSubClient"
+      - name: Compile sensor sketch
+        run: arduino-cli compile --fqbn esp32:esp32:esp32doit-devkit-v1 firmware/sensor
