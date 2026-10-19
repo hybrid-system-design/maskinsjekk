@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="nb">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maskinsjekk</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --text: #1b2430; --muted: #6b7686; --line: #e3e7ed;
+    --temp: #d9480f; --vib: #1c7ed6; --ok: #2f9e44; --bad: #e03131;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11151b; --card: #1a2029; --text: #e6eaf0; --muted: #8b96a6; --line: #2a323e;
+            --temp: #ff8a4c; --vib: #5aa9ff; --ok: #51cf66; --bad: #ff6b6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+         font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 900px; margin: 0 auto; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0 auto 0 0; }
+  select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--card); color: var(--text); }
+  .status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 14px 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 14px; font-weight: 600; margin: 0 0 4px; color: var(--muted); }
+  .value { font-size: 34px; font-weight: 600; }
+  .value small { font-size: 15px; font-weight: 400; color: var(--muted); }
+  .range { font-size: 13px; color: var(--muted); }
+  svg { width: 100%; height: 180px; display: block; margin-top: 8px; }
+  .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+  .axis { fill: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Maskinsjekk</h1>
+    <select id="machine" aria-label="Maskin"></select>
+    <select id="range" aria-label="Tidsrom">
+      <option value="900,5">Siste 15 min</option>
+      <option value="3600,10" selected>Siste time</option>
+      <option value="21600,60">Siste 6 timer</option>
+      <option value="86400,300">Siste 24 timer</option>
+    </select>
+    <span class="status"><span class="dot" id="dot"></span><span id="statusText">Laster…</span></span>
+  </header>
+  <div id="charts"></div>
+</main>
+<script>
+const METRICS = [
+  { id: "temp_c",  title: "Temperatur", unit: "°C", color: "var(--temp)", digits: 1 },
+  { id: "vib_rms", title: "Vibrasjon (RMS)", unit: "g", color: "var(--vib)", digits: 4 },
+];
+const $ = id => document.getElementById(id);
+const fmtTime = ms => new Date(ms).toLocaleTimeString("nb-NO", { hour: "2-digit", minute: "2-digit" });
+const fmtNum = (v, d) => v.toLocaleString("nb-NO", { minimumFractionDigits: d, maximumFractionDigits: d });
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + " " + r.status);
+  return r.json();
+}
+
+async function loadMachines() {
+  const { machines } = await getJSON("/machines");
+  const sel = $("machine");
+  const prev = sel.value;
+  sel.innerHTML = "";
+  for (const m of machines) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = m.name || m.id;
+    sel.appendChild(o);
+  }
+  const live = machines.find(m => !m.stale) || machines[0];
+  sel.value = machines.some(m => m.id === prev) ? prev : (live ? live.id : "");
+  return machines;
+}
+
+function chartSVG(points, color, digits) {
+  const W = 800, H = 180, L = 8, R = 8, T = 8, B = 20;
+  const xs = points.map(p => p.ts), t0 = xs[0], t1 = xs[xs.length - 1] || t0 + 1;
+  let lo = Math.min(...points.map(p => p.min)), hi = Math.max(...points.map(p => p.max));
+  if (hi - lo < 1e-9) { lo -= 0.5; hi += 0.5; }
+  const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+  const x = t => L + (t1 === t0 ? (W - L - R) / 2 : (t - t0) / (t1 - t0) * (W - L - R));
+  const y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  const avg = points.map((p, i) => (i ? "L" : "M") + x(p.ts).toFixed(1) + " " + y(p.avg).toFixed(1)).join("");
+  const top = points.map((p, i) => (i ? "L" : "M") + x(p.ts).toFixed(1) + " " + y(p.max).toFixed(1)).join("");
+  const bot = points.slice().reverse().map(p => "L" + x(p.ts).toFixed(1) + " " + y(p.min).toFixed(1)).join("");
+  const grid = [0, 0.5, 1].map(f => {
+    const v = lo + (hi - lo) * f, yy = y(v);
+    return `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--line)"/>` +
+           `<text class="axis" x="${L + 2}" y="${yy - 3}">${fmtNum(v, digits)}</text>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${grid}` +
+    `<path d="${top}${bot}Z" fill="${color}" opacity="0.15"/>` +
+    `<path d="${avg}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/>` +
+    `<text class="axis" x="${L}" y="${H - 4}">${fmtTime(t0)}</text>` +
+    `<text class="axis" x="${W - R}" y="${H - 4}" text-anchor="end">${fmtTime(t1)}</text></svg>`;
+}
+
+async function refresh() {
+  const id = $("machine").value;
+  if (!id) return;
+  const [secs, bucket] = $("range").value.split(",").map(Number);
+  const to = Date.now(), from = to - secs * 1000;
+  const results = await Promise.all(METRICS.map(m =>
+    getJSON(`/machines/${encodeURIComponent(id)}/series?metric=${m.id}&from=${from}&to=${to}&bucket=${bucket}`)
+      .then(d => d.points || []).catch(() => [])));
+  const html = METRICS.map((m, i) => {
+    const pts = results[i];
+    if (!pts.length) return `<div class="card"><h2>${m.title}</h2><div class="empty">Ingen data i valgt tidsrom</div></div>`;
+    const last = pts[pts.length - 1];
+    const lo = Math.min(...pts.map(p => p.min)), hi = Math.max(...pts.map(p => p.max));
+    return `<div class="card"><h2>${m.title}</h2>` +
+      `<div class="value">${fmtNum(last.avg, m.digits)} <small>${m.unit}</small></div>` +
+      `<div class="range">min ${fmtNum(lo, m.digits)} · maks ${fmtNum(hi, m.digits)} ${m.unit}</div>` +
+      chartSVG(pts, m.color, m.digits) + `</div>`;
+  }).join("");
+  $("charts").innerHTML = html;
+}
+
+async function tick() {
+  try {
+    const machines = await loadMachines();
+    const m = machines.find(x => x.id === $("machine").value);
+    const dot = $("dot");
+    if (m && !m.stale) {
+      dot.className = "dot ok";
+      $("statusText").textContent = "Mottar data";
+    } else {
+      dot.className = "dot bad";
+      $("statusText").textContent = m && m.last_seen ? "Ingen data siden " + new Date(m.last_seen).toLocaleTimeString("nb-NO") : "Ingen data";
+    }
+    await refresh();
+  } catch (e) {
+    $("dot").className = "dot bad";
+    $("statusText").textContent = "Får ikke kontakt med tjenesten";
+  }
+}
+
+$("machine").addEventListener("change", refresh);
+$("range").addEventListener("change", refresh);
+tick();
+setInterval(tick, 5000);
+</script>
+</body>
+</html>

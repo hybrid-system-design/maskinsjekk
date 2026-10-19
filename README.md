@@ -132,7 +132,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32doit-devkit-v1 firmware/sensor
 arduino-cli upload  --fqbn esp32:esp32:esp32doit-devkit-v1 --port COM4 firmware/sensor
 ```
 
-Requires the `PubSubClient` library. CI compiles the sketch on every push.
+Requires the `PubSubClient`, `Adafruit SSD1306` and `Adafruit GFX Library` libraries. CI compiles the sketch on every push.
 
 ## Simulator (`tools/simulator/`)
 

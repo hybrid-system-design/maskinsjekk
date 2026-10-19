@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,5 +153,20 @@ func TestHealthAndCORS(t *testing.T) {
 	}
 	if code := get(t, ts.URL+"/nope", nil); code != 404 {
 		t.Fatalf("unknown path: %d", code)
+	}
+}
+
+func TestIndexPage(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+		t.Fatalf("index: %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if r2, err := http.Get(ts.URL + "/nope"); err != nil || r2.StatusCode != 404 {
+		t.Fatalf("unknown path should 404, got %v %v", r2, err)
 	}
 }

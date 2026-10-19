@@ -5,6 +5,7 @@
 package api
 
 import (
+	_ "embed"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -18,6 +19,11 @@ import (
 // maxSeriesPoints caps one series response so a wide range with a tiny bucket
 // can't produce an unbounded payload.
 const maxSeriesPoints = 5000
+
+// indexHTML is the minimal live view served at "/" until the Phase 4 dashboard.
+//
+//go:embed web/index.html
+var indexHTML []byte
 
 // Server holds the dependencies for the HTTP handlers.
 type Server struct {
@@ -38,7 +44,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /machines", s.handleMachines)
 	mux.HandleFunc("GET /machines/{id}/series", s.handleSeries)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /{$}", handleIndex)
 	return cors(mux)
+}
+
+func handleIndex(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(indexHTML)
 }
 
 type sensorJSON struct {

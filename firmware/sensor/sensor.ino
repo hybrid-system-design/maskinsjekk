@@ -14,6 +14,9 @@
 // - Retained hsd/<site>/<machine>/<sensor>/status: "online", or "offline" via
 //   the MQTT last will when the node drops off.
 // - WiFi and MQTT reconnect automatically; sampling never stops meanwhile.
+// - Optional 128x64 SSD1306 OLED (I2C 0x3C/0x3D, auto-detected, shares the
+//   accelerometer's bus) shows connection state, temperature and vibration.
+//   Without an OLED, or without an accelerometer, everything else still works.
 //
 // No credentials in code: everything lives in NVS and is set over the serial
 // console (115200 baud). Type `help`. Example first-time setup:
@@ -26,13 +29,16 @@
 //   set temp max6675
 //   reboot
 //
-// Libraries: PubSubClient (knolleary). WiFi, Wire, Preferences come with the
-// ESP32 core. Accelerometers are driven by raw register access (no library).
+// Libraries: PubSubClient (knolleary), Adafruit SSD1306 + Adafruit GFX (OLED).
+// WiFi, Wire, Preferences come with the ESP32 core. Accelerometers are driven
+// by raw register access (no library).
 
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Preferences.h>
 #include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 #include <math.h>
 #include <sys/time.h>
 #include <time.h>
@@ -48,6 +54,10 @@
 
 // I2C accelerometer on the default pins (SDA 21, SCL 22).
 #define I2C_HZ 400000
+
+// Optional SSD1306 OLED on the same bus (address 0x3C or 0x3D).
+#define OLED_W 128
+#define OLED_H 64
 
 static const char *FW_VERSION = "0.1.0";
 
@@ -90,6 +100,9 @@ bool validRate(long r) { return r >= 50 && r <= 500 && 1000 % r == 0; }
 
 AccelType accelType = ACCEL_NONE;
 uint8_t accelAddr = 0;
+
+// The sampler task (accelerometer) and loop() (OLED refresh) share the I2C bus.
+SemaphoreHandle_t i2cMutex;
 
 bool i2cWrite(uint8_t addr, uint8_t reg, uint8_t val) {
   Wire.beginTransmission(addr);
@@ -191,7 +204,10 @@ void samplerTask(void *) {
     vTaskDelayUntil(&lastWake, period);
 
     float x, y, z, dieTemp;
-    if (readAccel(x, y, z, dieTemp)) {
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
+    bool got = readAccel(x, y, z, dieTemp);
+    xSemaphoreGive(i2cMutex);
+    if (got) {
       if (n == 0) { ox = x; oy = y; oz = z; }
       double dx = x - ox, dy = y - oy, dz = z - oz;
       sx += dx; sy += dy; sz += dz;
@@ -342,6 +358,81 @@ void publishWindow(const VibWindow &w) {
   }
 }
 
+// --- OLED -------------------------------------------------------------------
+
+// Clock is kept at I2C_HZ after each transfer so the library doesn't slow the
+// accelerometer's bus down to its 100 kHz default.
+Adafruit_SSD1306 oled(OLED_W, OLED_H, &Wire, -1, I2C_HZ, I2C_HZ);
+bool oledPresent = false;
+
+void initOled() {
+  const uint8_t addrs[] = {0x3C, 0x3D};
+  for (uint8_t a : addrs) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() != 0) continue;
+    if (oled.begin(SSD1306_SWITCHCAPVCC, a)) {
+      oledPresent = true;
+      oled.setTextColor(SSD1306_WHITE);
+      Serial.printf("oled: SSD1306 at 0x%02X\n", a);
+      return;
+    }
+  }
+  Serial.println("oled: none found");
+}
+
+// oledMessage shows two short lines (boot / config problems).
+void oledMessage(const char *l1, const char *l2) {
+  if (!oledPresent) return;
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  oled.clearDisplay();
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+  oled.println("Maskinsjekk");
+  oled.setCursor(0, 20);
+  oled.println(l1);
+  oled.println(l2);
+  oled.display();
+  xSemaphoreGive(i2cMutex);
+}
+
+// updateOled redraws about once a second.
+void updateOled() {
+  static unsigned long last = 0;
+  if (!oledPresent || millis() - last < 1000) return;
+  last = millis();
+
+  char buf[24];
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  oled.clearDisplay();
+  oled.setTextSize(1);
+
+  oled.setCursor(0, 0);
+  oled.print(cfg.machine.substring(0, 21));
+
+  oled.setCursor(0, 10);
+  oled.print("WiFi ");
+  if (WiFi.status() == WL_CONNECTED) oled.print(WiFi.localIP()); else oled.print("--");
+
+  oled.setCursor(0, 20);
+  oled.printf("MQTT %s  NTP %s", mqtt.connected() ? "ok" : "--", timeSynced() ? "ok" : "--");
+
+  // Temperature, large.
+  if (isnan(lastTemp)) snprintf(buf, sizeof(buf), "--.- C");
+  else snprintf(buf, sizeof(buf), "%.1f C", lastTemp);
+  oled.setTextSize(3);
+  oled.setCursor(0, 32);
+  oled.print(buf);
+
+  oled.setTextSize(1);
+  oled.setCursor(0, 56);
+  if (accelType == ACCEL_NONE) oled.print("vib: no sensor");
+  else if (isnan(lastWindow.rms)) oled.print("vib: --");
+  else oled.printf("vib %.4f g", lastWindow.rms);
+
+  oled.display();
+  xSemaphoreGive(i2cMutex);
+}
+
 // --- serial console ---------------------------------------------------------
 
 String line;
@@ -375,7 +466,8 @@ void handleCommand(String cmd) {
   if (verb == "reboot") { Serial.println("rebooting"); delay(100); ESP.restart(); }
   if (verb == "clear") { prefs.clear(); loadConfig(); Serial.println("config erased; reboot to apply"); return; }
   if (verb == "status") {
-    Serial.printf("fw %s, wifi %s, mqtt %s, ntp %s, accel %s\n", FW_VERSION,
+    Serial.printf("fw %s, oled %s, wifi %s, mqtt %s, ntp %s, accel %s\n", FW_VERSION,
+                  oledPresent ? "yes" : "no",
                   WiFi.status() == WL_CONNECTED ? "up" : "down", mqtt.connected() ? "up" : "down",
                   timeSynced() ? "synced" : "not synced",
                   accelType == ACCEL_ADXL345 ? "ADXL345" : accelType == ACCEL_MPU6050 ? "MPU6050" : "none");
@@ -441,20 +533,25 @@ void setup() {
   loadConfig();
   if (!validRate(cfg.rateHz)) cfg.rateHz = 200;
 
+  i2cMutex = xSemaphoreCreateMutex();
+  Wire.begin();
+  Wire.setClock(I2C_HZ);
+  initOled();
+
   if (!configComplete()) {
     Serial.println("config incomplete — set ssid, mqtt_host, site, machine, sensor (type help)");
     printConfig();
+    oledMessage("Config missing", "see serial console");
     return; // console only until configured and rebooted
   }
   printConfig();
+  oledMessage("Starting...", FW_VERSION);
 
   pinMode(MAX6675_CS, OUTPUT);
   pinMode(MAX6675_SCK, OUTPUT);
   pinMode(MAX6675_SO, INPUT);
   digitalWrite(MAX6675_CS, HIGH);
 
-  Wire.begin();
-  Wire.setClock(I2C_HZ);
   detectAccel();
 
   String base = "hsd/" + cfg.site + "/" + cfg.machine + "/" + cfg.sensor;
@@ -497,5 +594,6 @@ void loop() {
   while (xQueueReceive(windowQueue, &w, 0) == pdTRUE) {
     publishWindow(w);
   }
+  updateOled();
   delay(5);
 }
