@@ -10,10 +10,11 @@ struct Config {
   uint16_t mqttPort;
   String site, machine, sensor;
   uint16_t rateHz;
+  String accel; // auto (I2C ADXL345/MPU6050 detection) | adxl335 (analog, e.g. GY-61)
   String temp; // none | max6675 | mpu6050 (die temperature: board, not ambient)
 };
 
-enum AccelType { ACCEL_NONE, ACCEL_ADXL345, ACCEL_MPU6050 };
+enum AccelType { ACCEL_NONE, ACCEL_ADXL345, ACCEL_MPU6050, ACCEL_ADXL335 };
 
 struct VibWindow {
   float rms;          // g, NAN if too few samples

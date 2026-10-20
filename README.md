@@ -101,10 +101,15 @@ Coming with later phases: `/machines/{id}/state`, `/metrics`, `/timeline`, `/job
 
 ## Sensor firmware (`firmware/sensor/`)
 
-ESP32 (Arduino core) with an I2C accelerometer — **ADXL345 or MPU6050,
-auto-detected** on the default pins (SDA 21, SCL 22) — and an optional
+ESP32 (Arduino core) with an accelerometer — an I2C **ADXL345 or MPU6050,
+auto-detected** on the default pins (SDA 21, SCL 22), or an analog **ADXL335
+(GY-61 breakout)** enabled with `set accel adxl335` — and an optional
 temperature source (MAX6675 thermocouple on SCK 18 / CS 19 / SO 5, or the
-MPU6050 die temperature).
+MPU6050 die temperature). An optional 128x64 SSD1306 OLED (I2C, auto-detected)
+shows connection state, temperature, vibration and a live x/y/z debug readout.
+
+GY-61 wiring (ADC1 pins only; ADC2 is unusable while WiFi is on): VCC → 3V3,
+GND → GND, X → GPIO36, Y → GPIO39, Z → GPIO34.
 
 - A FreeRTOS task samples at `rate` Hz (default 200). Each 1 s window subtracts
   the per-axis mean (gravity/DC) and reports `vib_rms = sqrt(var_x+var_y+var_z)`
@@ -122,6 +127,7 @@ MPU6050 die temperature).
   set machine printer-1
   set sensor esp32-1
   set temp max6675        # none | max6675 | mpu6050
+  set accel adxl335       # auto (I2C, default) | adxl335 (analog GY-61)
   reboot
   ```
 

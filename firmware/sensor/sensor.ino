@@ -2,8 +2,9 @@
 //
 // Read-only: clamps onto a machine and never touches its controls.
 //
-// - Samples an I2C accelerometer (ADXL345 or MPU6050, auto-detected) at
-//   RATE_HZ (default 200) on a dedicated FreeRTOS task.
+// - Samples an accelerometer at RATE_HZ (default 200) on a dedicated FreeRTOS
+//   task: I2C ADXL345 / MPU6050 (auto-detected), or an analog ADXL335 (GY-61
+//   breakout) read by the ESP32 ADC when `set accel adxl335` is configured.
 // - Every second computes the vibration RMS with gravity/DC removed: the mean of
 //   each axis over the 1 s window is subtracted, and the result is
 //   sqrt(var_x + var_y + var_z) in g.
@@ -15,8 +16,9 @@
 //   the MQTT last will when the node drops off.
 // - WiFi and MQTT reconnect automatically; sampling never stops meanwhile.
 // - Optional 128x64 SSD1306 OLED (I2C 0x3C/0x3D, auto-detected, shares the
-//   accelerometer's bus) shows connection state, temperature and vibration.
-//   Without an OLED, or without an accelerometer, everything else still works.
+//   accelerometer's bus) shows connection state, temperature, vibration and a
+//   live x/y/z debug readout. Without an OLED, or without an accelerometer,
+//   everything else still works.
 //
 // No credentials in code: everything lives in NVS and is set over the serial
 // console (115200 baud). Type `help`. Example first-time setup:
@@ -27,7 +29,11 @@
 //   set machine printer-1
 //   set sensor esp32-1
 //   set temp max6675
+//   set accel adxl335       # only for the analog GY-61; omit for I2C sensors
 //   reboot
+//
+// GY-61 / ADXL335 wiring (ADC1 pins only; ADC2 is unusable while WiFi is on):
+//   VCC -> 3V3 (not 5 V), GND -> GND, X -> GPIO36, Y -> GPIO39, Z -> GPIO34
 //
 // Libraries: PubSubClient (knolleary), Adafruit SSD1306 + Adafruit GFX (OLED).
 // WiFi, Wire, Preferences come with the ESP32 core. Accelerometers are driven
@@ -55,6 +61,15 @@
 // I2C accelerometer on the default pins (SDA 21, SCL 22).
 #define I2C_HZ 400000
 
+// Analog ADXL335 (GY-61) outputs. Must be ADC1 pins: ADC2 conflicts with WiFi.
+#define ADXL335_X 36
+#define ADXL335_Y 39
+#define ADXL335_Z 34
+// Sensitivity is ratiometric: ~Vs/10 per g, i.e. ~330 mV/g at 3.3 V; 0 g sits
+// at Vs/2. Only the sensitivity matters here (the RMS removes the DC offset).
+#define ADXL335_MV_PER_G 330.0f
+#define ADXL335_OVERSAMPLE 4
+
 // Optional SSD1306 OLED on the same bus (address 0x3C or 0x3D).
 #define OLED_W 128
 #define OLED_H 64
@@ -76,6 +91,7 @@ void loadConfig() {
   cfg.sensor   = prefs.getString("sensor", "");
   cfg.rateHz   = prefs.getUShort("rate", 200);
   cfg.temp     = prefs.getString("temp", "none");
+  cfg.accel    = prefs.getString("accel", "auto");
 }
 
 bool configComplete() {
@@ -103,6 +119,12 @@ uint8_t accelAddr = 0;
 
 // The sampler task (accelerometer) and loop() (OLED refresh) share the I2C bus.
 SemaphoreHandle_t i2cMutex;
+
+bool accelUsesI2C() { return accelType == ACCEL_ADXL345 || accelType == ACCEL_MPU6050; }
+
+// Latest raw sample, for the OLED debug readout (written by the sampler task).
+volatile float dbgG[3] = {NAN, NAN, NAN};
+volatile int dbgMv[3] = {0, 0, 0}; // ADXL335 only
 
 bool i2cWrite(uint8_t addr, uint8_t reg, uint8_t val) {
   Wire.beginTransmission(addr);
@@ -137,6 +159,17 @@ bool initMpu6050(uint8_t addr) {
 }
 
 void detectAccel() {
+  if (cfg.accel == "adxl335") {
+    analogReadResolution(12);
+    const uint8_t pins[] = {ADXL335_X, ADXL335_Y, ADXL335_Z};
+    for (uint8_t p : pins) {
+      pinMode(p, INPUT);
+      analogSetPinAttenuation(p, ADC_11db); // ~0-3.1 V, covers the 1.65 V ± 1 V swing
+    }
+    accelType = ACCEL_ADXL335;
+    Serial.printf("accel: ADXL335 analog on GPIO %d/%d/%d\n", ADXL335_X, ADXL335_Y, ADXL335_Z);
+    return;
+  }
   uint8_t id;
   const uint8_t adxl[] = {0x53, 0x1D};
   for (uint8_t a : adxl) {
@@ -164,12 +197,27 @@ void detectAccel() {
 bool readAccel(float &x, float &y, float &z, float &dieTemp) {
   uint8_t b[8];
   dieTemp = NAN;
+  if (accelType == ACCEL_ADXL335) {
+    const uint8_t pins[] = {ADXL335_X, ADXL335_Y, ADXL335_Z};
+    float g[3];
+    for (int i = 0; i < 3; i++) {
+      uint32_t sum = 0;
+      for (int k = 0; k < ADXL335_OVERSAMPLE; k++) sum += analogReadMilliVolts(pins[i]);
+      float mv = (float)sum / ADXL335_OVERSAMPLE;
+      dbgMv[i] = (int)mv;
+      g[i] = (mv - 1650.0f) / ADXL335_MV_PER_G;
+      dbgG[i] = g[i];
+    }
+    x = g[0]; y = g[1]; z = g[2];
+    return true;
+  }
   if (accelType == ACCEL_ADXL345) {
     if (!i2cRead(accelAddr, 0x32, b, 6)) return false;
     const float s = 0.0039f; // g/LSB in full-resolution mode
     x = (int16_t)(b[1] << 8 | b[0]) * s;
     y = (int16_t)(b[3] << 8 | b[2]) * s;
     z = (int16_t)(b[5] << 8 | b[4]) * s;
+    dbgG[0] = x; dbgG[1] = y; dbgG[2] = z;
     return true;
   }
   if (accelType == ACCEL_MPU6050) {
@@ -179,6 +227,7 @@ bool readAccel(float &x, float &y, float &z, float &dieTemp) {
     y = (int16_t)(b[2] << 8 | b[3]) * s;
     z = (int16_t)(b[4] << 8 | b[5]) * s;
     dieTemp = (int16_t)(b[6] << 8 | b[7]) / 340.0f + 36.53f;
+    dbgG[0] = x; dbgG[1] = y; dbgG[2] = z;
     return true;
   }
   return false;
@@ -204,9 +253,14 @@ void samplerTask(void *) {
     vTaskDelayUntil(&lastWake, period);
 
     float x, y, z, dieTemp;
-    xSemaphoreTake(i2cMutex, portMAX_DELAY);
-    bool got = readAccel(x, y, z, dieTemp);
-    xSemaphoreGive(i2cMutex);
+    bool got;
+    if (accelUsesI2C()) { // the ADC needs no bus lock, so the OLED can't stall it
+      xSemaphoreTake(i2cMutex, portMAX_DELAY);
+      got = readAccel(x, y, z, dieTemp);
+      xSemaphoreGive(i2cMutex);
+    } else {
+      got = readAccel(x, y, z, dieTemp);
+    }
     if (got) {
       if (n == 0) { ox = x; oy = y; oz = z; }
       double dx = x - ox, dy = y - oy, dz = z - oz;
@@ -395,10 +449,12 @@ void oledMessage(const char *l1, const char *l2) {
   xSemaphoreGive(i2cMutex);
 }
 
-// updateOled redraws about once a second.
+// updateOled redraws 4x/s so the x/y/z readout is live (debug for now). With an
+// I2C accelerometer each redraw briefly holds the bus, costing it a few samples;
+// the analog ADXL335 is unaffected. Raise the interval if that matters.
 void updateOled() {
   static unsigned long last = 0;
-  if (!oledPresent || millis() - last < 1000) return;
+  if (!oledPresent || millis() - last < 250) return;
   last = millis();
 
   char buf[24];
@@ -409,25 +465,38 @@ void updateOled() {
   oled.setCursor(0, 0);
   oled.print(cfg.machine.substring(0, 21));
 
-  oled.setCursor(0, 10);
+  oled.setCursor(0, 9);
   oled.print("WiFi ");
   if (WiFi.status() == WL_CONNECTED) oled.print(WiFi.localIP()); else oled.print("--");
 
-  oled.setCursor(0, 20);
+  oled.setCursor(0, 18);
   oled.printf("MQTT %s  NTP %s", mqtt.connected() ? "ok" : "--", timeSynced() ? "ok" : "--");
 
-  // Temperature, large.
+  // Temperature (left, 2x) and vibration RMS (right).
   if (isnan(lastTemp)) snprintf(buf, sizeof(buf), "--.- C");
   else snprintf(buf, sizeof(buf), "%.1f C", lastTemp);
-  oled.setTextSize(3);
-  oled.setCursor(0, 32);
+  oled.setTextSize(2);
+  oled.setCursor(0, 28);
   oled.print(buf);
 
   oled.setTextSize(1);
-  oled.setCursor(0, 56);
-  if (accelType == ACCEL_NONE) oled.print("vib: no sensor");
-  else if (isnan(lastWindow.rms)) oled.print("vib: --");
-  else oled.printf("vib %.4f g", lastWindow.rms);
+  oled.setCursor(78, 28);
+  oled.print("vib rms");
+  oled.setCursor(78, 37);
+  if (accelType == ACCEL_NONE) oled.print("no sensor");
+  else if (isnan(lastWindow.rms)) oled.print("--");
+  else oled.printf("%.4f g", lastWindow.rms);
+
+  // Debug: latest raw sample in g, and for the analog sensor the pin voltages.
+  oled.setCursor(0, 46);
+  if (accelType == ACCEL_NONE) {
+    oled.print("accel: none");
+  } else {
+    oled.printf("x%+.2f y%+.2f z%+.2f", (float)dbgG[0], (float)dbgG[1], (float)dbgG[2]);
+    oled.setCursor(0, 55);
+    if (accelType == ACCEL_ADXL335) oled.printf("mV %d %d %d", (int)dbgMv[0], (int)dbgMv[1], (int)dbgMv[2]);
+    else oled.printf("n %u err %u", (unsigned)lastWindow.n, (unsigned)lastWindow.errors);
+  }
 
   oled.display();
   xSemaphoreGive(i2cMutex);
@@ -442,17 +511,18 @@ void printHelp() {
       "commands:\n"
       "  show                 print config (password masked)\n"
       "  status               connection + last reading\n"
-      "  set <key> <value>    keys: ssid pass mqtt_host mqtt_port site machine sensor rate temp\n"
+      "  set <key> <value>    keys: ssid pass mqtt_host mqtt_port site machine sensor rate temp accel\n"
       "                       rate: 50..500 Hz dividing 1000 (default 200)\n"
       "                       temp: none | max6675 | mpu6050\n"
+      "                       accel: auto (I2C ADXL345/MPU6050) | adxl335 (analog GY-61)\n"
       "  clear                erase all config\n"
       "  reboot               restart and apply config");
 }
 
 void printConfig() {
-  Serial.printf("ssid=%s pass=%s mqtt=%s:%u\nsite=%s machine=%s sensor=%s rate=%uHz temp=%s\n",
+  Serial.printf("ssid=%s pass=%s mqtt=%s:%u\nsite=%s machine=%s sensor=%s rate=%uHz temp=%s accel=%s\n",
                 cfg.ssid.c_str(), cfg.pass.length() ? "****" : "(empty)", cfg.mqttHost.c_str(), cfg.mqttPort,
-                cfg.site.c_str(), cfg.machine.c_str(), cfg.sensor.c_str(), cfg.rateHz, cfg.temp.c_str());
+                cfg.site.c_str(), cfg.machine.c_str(), cfg.sensor.c_str(), cfg.rateHz, cfg.temp.c_str(), cfg.accel.c_str());
 }
 
 void handleCommand(String cmd) {
@@ -470,7 +540,8 @@ void handleCommand(String cmd) {
                   oledPresent ? "yes" : "no",
                   WiFi.status() == WL_CONNECTED ? "up" : "down", mqtt.connected() ? "up" : "down",
                   timeSynced() ? "synced" : "not synced",
-                  accelType == ACCEL_ADXL345 ? "ADXL345" : accelType == ACCEL_MPU6050 ? "MPU6050" : "none");
+                  accelType == ACCEL_ADXL345 ? "ADXL345" : accelType == ACCEL_MPU6050 ? "MPU6050" :
+                    accelType == ACCEL_ADXL335 ? "ADXL335 (analog)" : "none");
     Serial.printf("last window: vib_rms=%.5f g, n=%u, i2c errors=%u, temp_c=%.2f\n",
                   lastWindow.rms, lastWindow.n, lastWindow.errors, lastTemp);
     return;
@@ -499,6 +570,9 @@ void handleCommand(String cmd) {
   } else if (key == "temp") {
     if (val != "none" && val != "max6675" && val != "mpu6050") { Serial.println("temp: none | max6675 | mpu6050"); return; }
     prefs.putString("temp", val);
+  } else if (key == "accel") {
+    if (val != "auto" && val != "adxl335") { Serial.println("accel: auto | adxl335"); return; }
+    prefs.putString("accel", val);
   } else {
     Serial.println("unknown key; type help");
     return;
