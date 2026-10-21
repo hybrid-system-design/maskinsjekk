@@ -6,8 +6,9 @@
 
 struct Config {
   String ssid, pass;
-  String mqttHost;
+  String mqttHost; // IP, or an mDNS name ending in .local (resolved on each connect)
   uint16_t mqttPort;
+  String otaPass;  // empty = network OTA disabled
   String site, machine, sensor;
   uint16_t rateHz;
   String accel; // auto (I2C ADXL345/MPU6050 detection) | adxl335 (analog, e.g. GY-61)

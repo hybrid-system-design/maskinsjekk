@@ -116,18 +116,26 @@ GND → GND, X → GPIO36, Y → GPIO39, Z → GPIO34.
   in g.
 - WiFi and MQTT reconnect on their own without blocking sampling. Time comes
   from NTP (UTC).
+- `mqtt_host` is a plain IP or an mDNS name ending in `.local` (e.g.
+  `fedora.local`, served by avahi on the broker host). The name is re-resolved
+  before every MQTT connect attempt, so a broker that changes IP is picked up
+  without touching the node; if a lookup fails the last known IP is tried.
+- Network (OTA) uploads via ArduinoOTA once `ota_pass` is set (disabled until
+  then). The node advertises itself as `hsd-<machine>-<sensor>.local`, port
+  3232, and shows `OTA nn%` on the OLED during an update.
 - **No credentials in code**: config lives in NVS and is set over the serial
   console (115200 baud):
 
   ```
   set ssid MyWifi
   set pass secret
-  set mqtt_host 192.168.1.50
+  set mqtt_host fedora.local   # or a plain IP, e.g. 192.168.1.50
   set site demo
   set machine printer-1
   set sensor esp32-1
   set temp max6675        # none | max6675 | mpu6050
   set accel adxl335       # auto (I2C, default) | adxl335 (analog GY-61)
+  set ota_pass secret     # enables network uploads (masked in `show`)
   reboot
   ```
 
@@ -137,6 +145,27 @@ GND → GND, X → GPIO36, Y → GPIO39, Z → GPIO34.
 arduino-cli compile --fqbn esp32:esp32:esp32doit-devkit-v1 firmware/sensor
 arduino-cli upload  --fqbn esp32:esp32:esp32doit-devkit-v1 --port COM4 firmware/sensor
 ```
+
+Over the network, once `ota_pass` is set. arduino-cli only uploads to a
+network port its mDNS discovery has seen, so first check that
+`arduino-cli board list` shows the node (`hsd-<machine>-<sensor>`, protocol
+`network`) and use the IP it lists:
+
+```bash
+arduino-cli upload --fqbn esp32:esp32:esp32doit-devkit-v1 --port 192.168.68.50 --protocol network --upload-field password=secret --discovery-timeout 10s firmware/sensor
+```
+
+If discovery doesn't see the node (`port not found: <ip> network`), push the
+compiled image with the core's `espota` tool directly (`espota.exe` on
+Windows, `espota.py` elsewhere, in the esp32 core's `tools/` directory;
+compile with `--output-dir <dir>` first, outside the repo):
+
+```bash
+espota.exe -r -i 192.168.68.50 -p 3232 --auth=secret -f <dir>/sensor.ino.bin
+```
+
+The sketch must keep fitting the default partition scheme's OTA app slot
+(1.25 MB).
 
 Requires the `PubSubClient`, `Adafruit SSD1306` and `Adafruit GFX Library` libraries. CI compiles the sketch on every push.
 

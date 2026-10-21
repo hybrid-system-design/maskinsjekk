@@ -15,6 +15,11 @@
 // - Retained hsd/<site>/<machine>/<sensor>/status: "online", or "offline" via
 //   the MQTT last will when the node drops off.
 // - WiFi and MQTT reconnect automatically; sampling never stops meanwhile.
+// - mqtt_host may be an IP or an mDNS name ending in .local (e.g. fedora.local);
+//   the name is re-resolved before every MQTT connect attempt, so the broker can
+//   change IP without reconfiguring the node.
+// - Network (OTA) updates via ArduinoOTA, hostname hsd-<machine>-<sensor>, once
+//   an OTA password is set with `set ota_pass <secret>`; disabled until then.
 // - Optional 128x64 SSD1306 OLED (I2C 0x3C/0x3D, auto-detected, shares the
 //   accelerometer's bus) shows connection state, temperature, vibration and a
 //   live x/y/z debug readout. Without an OLED, or without an accelerometer,
@@ -24,22 +29,25 @@
 // console (115200 baud). Type `help`. Example first-time setup:
 //   set ssid MyWifi
 //   set pass secret
-//   set mqtt_host 192.168.1.50
+//   set mqtt_host fedora.local   # or a plain IP, e.g. 192.168.1.50
 //   set site demo
 //   set machine printer-1
 //   set sensor esp32-1
 //   set temp max6675
 //   set accel adxl335       # only for the analog GY-61; omit for I2C sensors
+//   set ota_pass secret     # enables network uploads
 //   reboot
 //
 // GY-61 / ADXL335 wiring (ADC1 pins only; ADC2 is unusable while WiFi is on):
 //   VCC -> 3V3 (not 5 V), GND -> GND, X -> GPIO36, Y -> GPIO39, Z -> GPIO34
 //
 // Libraries: PubSubClient (knolleary), Adafruit SSD1306 + Adafruit GFX (OLED).
-// WiFi, Wire, Preferences come with the ESP32 core. Accelerometers are driven
+// WiFi, Wire, Preferences, ESPmDNS, ArduinoOTA come with the ESP32 core. Accelerometers are driven
 // by raw register access (no library).
 
 #include <WiFi.h>
+#include <ESPmDNS.h>
+#include <ArduinoOTA.h>
 #include <PubSubClient.h>
 #include <Preferences.h>
 #include <Wire.h>
@@ -74,7 +82,7 @@
 #define OLED_W 128
 #define OLED_H 64
 
-static const char *FW_VERSION = "0.1.0";
+static const char *FW_VERSION = "0.2.0";
 
 // --- config (NVS) -----------------------------------------------------------
 
@@ -86,6 +94,7 @@ void loadConfig() {
   cfg.pass     = prefs.getString("pass", "");
   cfg.mqttHost = prefs.getString("mqtt_host", "");
   cfg.mqttPort = prefs.getUShort("mqtt_port", 1883);
+  cfg.otaPass  = prefs.getString("ota_pass", "");
   cfg.site     = prefs.getString("site", "");
   cfg.machine  = prefs.getString("machine", "");
   cfg.sensor   = prefs.getString("sensor", "");
@@ -334,6 +343,14 @@ String dataTopic, statusTopic, clientId;
 unsigned long lastWifiAttempt = 0, lastMqttAttempt = 0;
 bool ntpStarted = false;
 
+// Broker address. setServer(const char*) keeps the pointer, so the host string
+// is a private copy that never changes after setup() (cfg is reloaded by `set`).
+String brokerHost;     // as configured: IP or name
+String brokerMdnsName; // name without ".local" when using mDNS, else empty
+IPAddress brokerIp;    // last mDNS result, kept as a fallback if a query fails
+bool mdnsStarted = false;
+bool otaEnabled = false;
+
 bool timeSynced() { return time(nullptr) > 1700000000; }
 
 uint64_t nowUnixMs() {
@@ -350,6 +367,7 @@ void maintainWifi() {
       Serial.print("wifi: connected, ip ");
       Serial.println(WiFi.localIP());
     }
+    if (!mdnsStarted) startNetworkServices();
     return;
   }
   // The core auto-reconnects; kick it explicitly if it has been down a while.
@@ -361,10 +379,33 @@ void maintainWifi() {
   }
 }
 
+// resolveBroker points the MQTT client at the broker. For an mDNS name it
+// queries the network (blocking up to ~1.5 s; the sampler task keeps running
+// and the window queue absorbs the gap). Returns false if there is no address.
+bool resolveBroker() {
+  if (brokerMdnsName.length() == 0) return true; // plain IP/host, set in setup()
+  if (!mdnsStarted) return false;
+  IPAddress ip = MDNS.queryHost(brokerMdnsName, 1500);
+  if (ip != IPAddress((uint32_t)0)) {
+    if (ip != brokerIp) {
+      Serial.printf("mdns: %s -> %s\n", brokerHost.c_str(), ip.toString().c_str());
+      brokerIp = ip;
+    }
+  } else if (brokerIp != IPAddress((uint32_t)0)) {
+    Serial.printf("mdns: %s not answering, trying last known %s\n", brokerHost.c_str(), brokerIp.toString().c_str());
+  } else {
+    Serial.printf("mdns: could not resolve %s\n", brokerHost.c_str());
+    return false;
+  }
+  mqtt.setServer(brokerIp, cfg.mqttPort);
+  return true;
+}
+
 void maintainMqtt() {
   if (WiFi.status() != WL_CONNECTED || mqtt.connected()) return;
   if (millis() - lastMqttAttempt < 5000) return; // backoff; sampling continues meanwhile
   lastMqttAttempt = millis();
+  if (!resolveBroker()) return;
   if (mqtt.connect(clientId.c_str(), nullptr, nullptr, statusTopic.c_str(), 1, true, "offline")) {
     mqtt.publish(statusTopic.c_str(), "online", true);
     Serial.println("mqtt: connected");
@@ -502,6 +543,56 @@ void updateOled() {
   xSemaphoreGive(i2cMutex);
 }
 
+// --- mDNS + OTA -------------------------------------------------------------
+
+String otaHostname() {
+  String h = "hsd-" + cfg.machine + "-" + cfg.sensor;
+  return h.substring(0, 63); // DNS label limit
+}
+
+// startNetworkServices runs once WiFi is first up. ArduinoOTA.begin() starts
+// mDNS itself (and advertises the upload service); without OTA we start it
+// plainly so .local broker names still resolve. While an upload runs,
+// ArduinoOTA.handle() blocks loop(); the sampler task keeps running and its
+// surplus windows are dropped, and the node reboots when the upload completes.
+void startNetworkServices() {
+  mdnsStarted = true;
+  String host = otaHostname();
+  if (cfg.otaPass.length() == 0) {
+    if (!MDNS.begin(host)) Serial.println("mdns: failed to start");
+    Serial.println("ota: disabled (set ota_pass to enable)");
+    return;
+  }
+  ArduinoOTA.setHostname(host.c_str());
+  ArduinoOTA.setPassword(cfg.otaPass.c_str());
+  ArduinoOTA
+      .onStart([]() {
+        Serial.println("ota: update started");
+        oledMessage("OTA update", "starting...");
+      })
+      .onProgress([](unsigned int done, unsigned int total) {
+        static int lastPct = -1;
+        int pct = total ? (int)(100ULL * done / total) : 0;
+        if (pct == lastPct) return;
+        lastPct = pct;
+        char buf[12];
+        snprintf(buf, sizeof(buf), "OTA %d%%", pct);
+        oledMessage("OTA update", buf); // takes i2cMutex
+        if (pct % 10 == 0) Serial.printf("ota: %d%%\n", pct);
+      })
+      .onEnd([]() {
+        Serial.println("ota: done, rebooting");
+        oledMessage("OTA done", "rebooting...");
+      })
+      .onError([](ota_error_t e) {
+        Serial.printf("ota: error %u\n", (unsigned)e);
+        oledMessage("OTA failed", e == OTA_AUTH_ERROR ? "bad password" : "see serial");
+      });
+  ArduinoOTA.begin();
+  otaEnabled = true;
+  Serial.printf("ota: enabled as %s.local\n", host.c_str());
+}
+
 // --- serial console ---------------------------------------------------------
 
 String line;
@@ -511,7 +602,9 @@ void printHelp() {
       "commands:\n"
       "  show                 print config (password masked)\n"
       "  status               connection + last reading\n"
-      "  set <key> <value>    keys: ssid pass mqtt_host mqtt_port site machine sensor rate temp accel\n"
+      "  set <key> <value>    keys: ssid pass mqtt_host mqtt_port site machine sensor rate temp accel ota_pass\n"
+      "                       mqtt_host: IP, or mDNS name ending in .local (e.g. fedora.local)\n"
+      "                       ota_pass: enables network (OTA) uploads; unset = disabled\n"
       "                       rate: 50..500 Hz dividing 1000 (default 200)\n"
       "                       temp: none | max6675 | mpu6050\n"
       "                       accel: auto (I2C ADXL345/MPU6050) | adxl335 (analog GY-61)\n"
@@ -520,8 +613,9 @@ void printHelp() {
 }
 
 void printConfig() {
-  Serial.printf("ssid=%s pass=%s mqtt=%s:%u\nsite=%s machine=%s sensor=%s rate=%uHz temp=%s accel=%s\n",
+  Serial.printf("ssid=%s pass=%s mqtt=%s:%u ota_pass=%s\nsite=%s machine=%s sensor=%s rate=%uHz temp=%s accel=%s\n",
                 cfg.ssid.c_str(), cfg.pass.length() ? "****" : "(empty)", cfg.mqttHost.c_str(), cfg.mqttPort,
+                cfg.otaPass.length() ? "****" : "(empty)",
                 cfg.site.c_str(), cfg.machine.c_str(), cfg.sensor.c_str(), cfg.rateHz, cfg.temp.c_str(), cfg.accel.c_str());
 }
 
@@ -542,6 +636,14 @@ void handleCommand(String cmd) {
                   timeSynced() ? "synced" : "not synced",
                   accelType == ACCEL_ADXL345 ? "ADXL345" : accelType == ACCEL_MPU6050 ? "MPU6050" :
                     accelType == ACCEL_ADXL335 ? "ADXL335 (analog)" : "none");
+    String broker = brokerHost;
+    if (brokerMdnsName.length()) {
+      broker += " -> ";
+      broker += brokerIp != IPAddress((uint32_t)0) ? brokerIp.toString() : String("unresolved");
+    }
+    String ota = otaEnabled ? "enabled as " + otaHostname() + ".local"
+                            : String(cfg.otaPass.length() ? "pending (wifi/reboot)" : "disabled");
+    Serial.printf("broker %s, ota %s\n", broker.c_str(), ota.c_str());
     Serial.printf("last window: vib_rms=%.5f g, n=%u, i2c errors=%u, temp_c=%.2f\n",
                   lastWindow.rms, lastWindow.n, lastWindow.errors, lastTemp);
     return;
@@ -554,7 +656,7 @@ void handleCommand(String cmd) {
   String key = rest.substring(0, sp2);
   String val = rest.substring(sp2 + 1); // may contain spaces (SSIDs)
 
-  if (key == "ssid" || key == "pass" || key == "mqtt_host") {
+  if (key == "ssid" || key == "pass" || key == "mqtt_host" || key == "ota_pass") {
     prefs.putString(key.c_str(), val);
   } else if (key == "site" || key == "machine" || key == "sensor") {
     if (!validId(val)) { Serial.println("ids must be 1-64 chars of a-z 0-9 - _"); return; }
@@ -638,7 +740,13 @@ void setup() {
   WiFi.begin(cfg.ssid.c_str(), cfg.pass.c_str());
   lastWifiAttempt = millis();
 
-  mqtt.setServer(cfg.mqttHost.c_str(), cfg.mqttPort);
+  brokerHost = cfg.mqttHost;
+  brokerHost.trim();
+  if (brokerHost.endsWith(".local")) {
+    brokerMdnsName = brokerHost.substring(0, brokerHost.length() - 6); // resolved per attempt
+  } else {
+    mqtt.setServer(brokerHost.c_str(), cfg.mqttPort);
+  }
   mqtt.setKeepAlive(15);
   mqtt.setSocketTimeout(5); // bound how long a dead broker can block loop()
 
@@ -661,6 +769,7 @@ void loop() {
   }
 
   maintainWifi();
+  if (otaEnabled) ArduinoOTA.handle();
   maintainMqtt();
   mqtt.loop();
 
