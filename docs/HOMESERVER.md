@@ -28,13 +28,33 @@ Laptop specifics:
 - Enable automatic updates (`dnf-automatic`). Fedora releases need an upgrade
   about every 6 months; Debian stable / Ubuntu LTS need far less attention.
 
-## 2. Start the stack
+## 2. Start the stack (pull-based deploys)
+
+The repo is private, so the server reads it with a **read-only deploy key**:
 
 ```bash
-git clone https://github.com/hybrid-system-design/maskinsjekk
-cd maskinsjekk/deploy
-docker compose up -d --build
+ssh-keygen -t ed25519 -N "" -C "maskinsjekk-deploy@$(hostname)" -f ~/.ssh/maskinsjekk_deploy
+cat >> ~/.ssh/config <<'CFG'
+Host github-maskinsjekk
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/maskinsjekk_deploy
+  IdentitiesOnly yes
+CFG
+# From a machine with gh logged in (adds it read-only):
+#   gh repo deploy-key add maskinsjekk_deploy.pub --title "<server> (read-only)"
+git clone git@github-maskinsjekk:hybrid-system-design/maskinsjekk.git ~/maskinsjekk
+~/maskinsjekk/deploy/deploy.sh --force
 ```
+
+Deploying afterwards: push to `main`, then
+
+```bash
+ssh <server> '~/maskinsjekk/deploy/deploy.sh'
+```
+
+`deploy.sh` fast-forwards to `origin/main`, rebuilds only if something changed
+(`--force` rebuilds anyway) and waits for `/healthz`, printing logs on failure.
 
 Both services use `restart: unless-stopped`, so they return after a reboot or
 power cut. Bind mounts carry `:z` so SELinux allows the containers to read them.
