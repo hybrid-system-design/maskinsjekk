@@ -36,5 +36,24 @@ services:
       - maskinsjekkdb:/data
       - ./config:/config:ro,z
 
+  # Optional: Bambu Lab printer status as a ground-truth sensor. Only started
+  # with the "bambu" profile (COMPOSE_PROFILES=bambu in deploy/.env, see
+  # .env.example). Host networking so it can hear the printer's UDP 2021
+  # announcements and follow it across DHCP address changes.
+  bambu-bridge:
+    build:
+      context: ../tools/bambu-bridge
+    profiles: [bambu]
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    network_mode: host
+    environment:
+      BAMBU_SERIAL: "${BAMBU_SERIAL:-}"
+      BAMBU_ACCESS_CODE: "${BAMBU_ACCESS_CODE:-}"
+      BAMBU_HOST: "${BAMBU_HOST:-}"
+      MQTT_URL: "tcp://127.0.0.1:${MQTT_PORT:-1883}"
+      TOPIC: "${BAMBU_TOPIC:-hsd/demo/printer-1/bambu}"
+
 volumes:
   maskinsjekkdb:

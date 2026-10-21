@@ -14,6 +14,9 @@ sudo systemctl enable --now docker
 
 # Firewall: MQTT from the sensors, HTTP for the live page / API
 sudo firewall-cmd --permanent --add-port=1883/tcp --add-port=8080/tcp
+# Bambu bridge with BAMBU_HOST unset hears the printer on UDP 2021; only needed
+# if the zone doesn't already allow it (FedoraWorkstation opens 1025-65535)
+sudo firewall-cmd --permanent --add-port=2021/udp
 sudo firewall-cmd --reload
 ```
 

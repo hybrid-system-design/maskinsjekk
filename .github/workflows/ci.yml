@@ -20,6 +20,7 @@ jobs:
           cache-dependency-path: |
             server/go.sum
             tools/simulator/go.sum
+            tools/bambu-bridge/go.sum
 
       - name: gofmt
         run: |
@@ -55,6 +56,14 @@ jobs:
         run: |
           go vet ./...
           go build ./...
+
+      - name: Vet, staticcheck & test Bambu bridge
+        working-directory: tools/bambu-bridge
+        run: |
+          go vet ./...
+          staticcheck ./...
+          go test -race ./...
+          go test -run='^$' -fuzz=FuzzReport -fuzztime=15s .
 
   integration:
     name: Integration (testcontainers + Mosquitto)

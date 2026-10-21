@@ -27,6 +27,7 @@ go.work.sum
 # Go build output (the compiled server binary; NOT the cmd/maskinsjekk source dir)
 /server/maskinsjekk
 /tools/simulator/simulator
+/tools/bambu-bridge/bambu-bridge
 
 # Firmware secrets, should anyone add them (config belongs in NVS)
 secrets.h

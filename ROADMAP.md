@@ -12,12 +12,14 @@ Timeframe ~2 weeks. Working end-to-end before polish. One line per item, tick wh
 - [x] ESP32 firmware: ADXL345/MPU6050 auto-detect, 200 Hz sampling, 1 s RMS (DC removed), temperature
 - [x] Firmware: NVS config over serial, WiFi/MQTT reconnect, NTP timestamps, online/offline status
 - [x] Tests (unit, fuzz, integration) + CI + Docker Compose
-- [ ] Verified on real hardware (sensor mounted on the printer)
+- [x] Verified on real hardware (sensor mounted on the printer)
 
 ## Phase 2 — State machine from vibration
 - [ ] Per-machine thresholds + debounce times in machines.json
 - [ ] States: OFF, HEATING, RUNNING, IDLE, UNPLANNED_STOP → `state_events`
-- [ ] Validate against the simulator's ground truth
+- [x] Bambu bridge (`tools/bambu-bridge`): printer status stored as sensor `bambu` → ground-truth labels for real data
+- [ ] Collect labelled data (several days of prints, idle and off)
+- [ ] Validate against the simulator's ground truth and the Bambu labels
 
 ## Phase 3 — Shelly: power as the primary signal
 - [ ] Ingest Shelly Gen2 status (`apower`, `aenergy.total`) mapped to a machine

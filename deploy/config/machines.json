@@ -8,7 +8,8 @@
           "id": "printer-1",
           "name": "3D-printer",
           "sensors": [
-            { "id": "esp32-1", "kind": "esp32-vibration" }
+            { "id": "esp32-1", "kind": "esp32-vibration" },
+            { "id": "bambu", "kind": "bambu-status" }
           ]
         },
         {

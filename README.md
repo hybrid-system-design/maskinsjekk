@@ -23,6 +23,7 @@ controls the machine. Full brief: [docs/SPEC.md](docs/SPEC.md). Progress:
 | `server/` | Go service: MQTT → normalized measurements in SQLite → HTTP API |
 | `firmware/sensor/` | ESP32 sensor node (Arduino): accelerometer RMS + temperature over MQTT |
 | `tools/simulator/` | Publishes a realistic machine profile (with ground-truth log), no hardware needed |
+| `tools/bambu-bridge/` | Optional: a Bambu Lab printer's own status as a ground-truth sensor |
 | `deploy/` | `docker-compose.yml`, Mosquitto config, `config/machines.json` |
 
 ## Quick start
@@ -180,6 +181,39 @@ state detection. Same `--seed` = same schedule. Publishes as machine
 Flags: `--hours` (backfill, default 6), `--step` (backfill interval, default 5s),
 `--live`, `--site`, `--machine`, `--sensor`, `--seed`, `--abort-rate`.
 
+## Bambu bridge (`tools/bambu-bridge/`)
+
+Ground-truth labels for real data: reads a Bambu Lab printer's status from its
+local MQTT server (TLS 8883, user `bblp`, LAN access code) and republishes it
+as an ordinary sensor, by default `hsd/demo/printer-1/bambu`. The server needs
+no changes: every numeric field becomes a metric next to `vib_rms`/`temp_c`.
+All printer-specific code stays in this tool.
+
+| metric | meaning |
+|---|---|
+| `printer_reachable` | 1 while the printer reports; 0 otherwise (then nothing else is sent) |
+| `state_code` | `gcode_state`: 0 IDLE, 1 PREPARE, 2 RUNNING, 3 PAUSE, 4 FINISH, 5 FAILED, 6 SLICING, -1 other |
+| `active` | 1 in PREPARE / RUNNING / PAUSE / SLICING |
+| `stage` | Bambu's `stg_cur` print sub-stage (e.g. heating, bed leveling), raw |
+| `percent`, `remaining_min`, `layer`, `total_layers` | job progress |
+| `nozzle_c`, `nozzle_target_c`, `bed_c`, `bed_target_c`, `chamber_c` | temperatures |
+| `door_open` | 0/1 on enclosed printers that report it |
+| `error_code` | `print_error` (non-zero after a failure) |
+
+Published every `INTERVAL` (5 s) and immediately on a state, stage or door
+change. Config is by environment: `BAMBU_SERIAL`, `BAMBU_ACCESS_CODE`
+(required), `BAMBU_HOST` (empty = find the printer by its UDP 2021
+announcements, so DHCP changes don't matter), `MQTT_URL`, `TOPIC`, `INTERVAL`.
+
+In the compose stack it is opt-in: copy `deploy/.env.example` to `deploy/.env`
+on the server, set `COMPOSE_PROFILES=bambu` and the serial/access code, and
+redeploy. It uses host networking to hear the announcements, which arrive unsolicited on
+UDP 2021. Fedora Workstation's default zone already allows 1025-65535; on a
+stricter firewall open it (`sudo firewall-cmd --permanent --add-port=2021/udp`)
+or set `BAMBU_HOST` instead.
+Some Bambu models accept only a few local MQTT clients at once (the Bambu app
+and e.g. Home Assistant count too).
+
 ## Testing
 
 ```bash
@@ -192,4 +226,5 @@ go test -tags integration -count=1 ./internal/integration/...   # needs Docker r
 The integration suite runs a real Mosquitto via testcontainers and covers the
 round trip, honoring device timestamps on backfill, bad-payload resilience,
 `AUTO_REGISTER=false`, and reconnecting after a network drop. CI runs everything
-above plus a Docker smoke test and the firmware compile.
+above plus the Bambu bridge tests (`cd tools/bambu-bridge && go test ./...`),
+a Docker smoke test and the firmware compile.
