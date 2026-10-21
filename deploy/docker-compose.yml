@@ -2,6 +2,8 @@
 # Bring up with:  docker compose up -d --build
 # Host ports are overridable (e.g. MQTT_PORT=1884 HTTP_PORT=8081) so this can
 # run next to another stack on the same demo laptop.
+# The ",z" on bind mounts relabels them for SELinux (Fedora/RHEL); it is a
+# no-op elsewhere.
 name: maskinsjekk
 
 services:
@@ -11,7 +13,7 @@ services:
     ports:
       - "${MQTT_PORT:-1883}:1883"
     volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,z
 
   maskinsjekk:
     build:
@@ -32,7 +34,7 @@ services:
       STALE_THRESHOLD: "30s"
     volumes:
       - maskinsjekkdb:/data
-      - ./config:/config:ro
+      - ./config:/config:ro,z
 
 volumes:
   maskinsjekkdb:
