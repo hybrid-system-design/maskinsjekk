@@ -7,11 +7,11 @@
 <style>
   :root {
     --bg: #f5f6f8; --card: #fff; --text: #1b2430; --muted: #6b7686; --line: #e3e7ed;
-    --temp: #d9480f; --vib: #1c7ed6; --ok: #2f9e44; --bad: #e03131;
+    --temp: #d9480f; --vib: #1c7ed6; --ok: #2f9e44; --bad: #e03131; --active: #2f9e44;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #11151b; --card: #1a2029; --text: #e6eaf0; --muted: #8b96a6; --line: #2a323e;
-            --temp: #ff8a4c; --vib: #5aa9ff; --ok: #51cf66; --bad: #ff6b6b; }
+            --temp: #ff8a4c; --vib: #5aa9ff; --ok: #51cf66; --bad: #ff6b6b; --active: #51cf66; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
@@ -33,6 +33,9 @@
   svg { width: 100%; height: 180px; display: block; margin-top: 8px; }
   .empty { color: var(--muted); padding: 24px 0; text-align: center; }
   .axis { fill: var(--muted); font-size: 11px; }
+  svg.band { height: 44px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 </style>
 </head>
 <body>
@@ -55,6 +58,15 @@ const METRICS = [
   { id: "temp_c",  title: "Temperatur", unit: "°C", color: "var(--temp)", digits: 1 },
   { id: "vib_rms", title: "Vibrasjon (RMS)", unit: "g", color: "var(--vib)", digits: 4 },
 ];
+// Machine state timeline: shown for any machine with a sensor publishing
+// state_code (today the Bambu bridge: the printer's own gcode_state).
+const STATES = {
+  0: ["Ledig", "#868e96"], 1: ["Forbereder", "#f08c00"], 2: ["Printer", "#2f9e44"],
+  3: ["Pause", "#fab005"], 4: ["Ferdig", "#1c7ed6"], 5: ["Feilet", "#e03131"],
+  6: ["Slicer", "#7048e8"], "-1": ["Ukjent", "#adb5bd"],
+};
+const ACTIVE_CODES = new Set([1, 2, 3, 6]);
+const STATUS_METRICS = ["state_code", "printer_reachable", "percent", "layer", "total_layers", "nozzle_c", "bed_c"];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => new Date(ms).toLocaleTimeString("nb-NO", { hour: "2-digit", minute: "2-digit" });
 const fmtNum = (v, d) => v.toLocaleString("nb-NO", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -81,13 +93,49 @@ async function loadMachines() {
   return machines;
 }
 
-function chartSVG(points, color, digits) {
+// All charts share the selected time range as x axis, so they line up.
+function xScale(t0, t1, W, L, R) {
+  return t => L + (t - t0) / (t1 - t0) * (W - L - R);
+}
+
+// stateSegments turns state_code buckets into [from, to, code] spans. A bucket
+// holding more than one state is a transition (code null). Short gaps between
+// buckets are bridged; longer ones stay empty (no data).
+function stateSegments(points, bucketMS) {
+  const maxGap = Math.max(3 * bucketMS, 20000);
+  const segs = [];
+  points.forEach((p, i) => {
+    const next = points[i + 1];
+    const end = next && next.ts - p.ts <= maxGap ? next.ts : p.ts + bucketMS;
+    const code = p.min === p.max ? p.min : null;
+    const prev = segs[segs.length - 1];
+    if (prev && prev[2] === code && prev[1] === p.ts) prev[1] = end; // one block per run
+    else segs.push([p.ts, end, code]);
+  });
+  return segs;
+}
+
+function bandSVG(segs, t0, t1) {
+  const W = 800, H = 44, L = 8, R = 8, T = 4, B = 20;
+  const x = xScale(t0, t1, W, L, R);
+  const rects = segs.map(([a, b, code]) => {
+    const xa = Math.max(x(a), L), xb = Math.min(x(b), W - R);
+    if (xb <= xa) return "";
+    const fill = code === null ? "var(--line)" : (STATES[code] || STATES["-1"])[1];
+    return `<rect x="${xa.toFixed(1)}" y="${T}" width="${(xb - xa).toFixed(1)}" height="${H - T - B}" fill="${fill}"/>`;
+  }).join("");
+  return `<svg class="band" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
+    `<rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="none" stroke="var(--line)"/>${rects}` +
+    `<text class="axis" x="${L}" y="${H - 4}">${fmtTime(t0)}</text>` +
+    `<text class="axis" x="${W - R}" y="${H - 4}" text-anchor="end">${fmtTime(t1)}</text></svg>`;
+}
+
+function chartSVG(points, color, digits, t0, t1, activeSpans) {
   const W = 800, H = 180, L = 8, R = 8, T = 8, B = 20;
-  const xs = points.map(p => p.ts), t0 = xs[0], t1 = xs[xs.length - 1] || t0 + 1;
   let lo = Math.min(...points.map(p => p.min)), hi = Math.max(...points.map(p => p.max));
   if (hi - lo < 1e-9) { lo -= 0.5; hi += 0.5; }
   const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
-  const x = t => L + (t1 === t0 ? (W - L - R) / 2 : (t - t0) / (t1 - t0) * (W - L - R));
+  const x = xScale(t0, t1, W, L, R);
   const y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
   const avg = points.map((p, i) => (i ? "L" : "M") + x(p.ts).toFixed(1) + " " + y(p.avg).toFixed(1)).join("");
   const top = points.map((p, i) => (i ? "L" : "M") + x(p.ts).toFixed(1) + " " + y(p.max).toFixed(1)).join("");
@@ -97,11 +145,53 @@ function chartSVG(points, color, digits) {
     return `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--line)"/>` +
            `<text class="axis" x="${L + 2}" y="${yy - 3}">${fmtNum(v, digits)}</text>`;
   }).join("");
-  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${grid}` +
+  const shade = (activeSpans || []).map(([a, b]) => {
+    const xa = Math.max(x(a), L), xb = Math.min(x(b), W - R);
+    return xb > xa ? `<rect x="${xa.toFixed(1)}" y="${T}" width="${(xb - xa).toFixed(1)}" height="${H - T - B}" fill="var(--active)" opacity="0.08"/>` : "";
+  }).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${shade}${grid}` +
     `<path d="${top}${bot}Z" fill="${color}" opacity="0.15"/>` +
     `<path d="${avg}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/>` +
     `<text class="axis" x="${L}" y="${H - 4}">${fmtTime(t0)}</text>` +
     `<text class="axis" x="${W - R}" y="${H - 4}" text-anchor="end">${fmtTime(t1)}</text></svg>`;
+}
+
+// statusCard renders the current state and the state timeline, or "" when
+// the machine has no state_code data in the range.
+function statusCard(st, segs, from, to) {
+  const states = st.state_code;
+  if (!states.length) return "";
+  const last = (metric, maxAgeMS = 30000) => {
+    const pts = st[metric];
+    const p = pts[pts.length - 1];
+    return p && to - p.ts <= maxAgeMS ? p : null;
+  };
+  const reach = last("printer_reachable");
+  const cur = last("state_code");
+  let title;
+  const detail = [];
+  if (reach && reach.max === 0) {
+    title = "Utilgjengelig";
+  } else if (!cur) {
+    title = "Ingen status siden " + fmtTime(states[states.length - 1].ts);
+  } else {
+    title = (STATES[cur.max] || STATES["-1"])[0];
+    const pct = last("percent"), layer = last("layer"), total = last("total_layers");
+    if (ACTIVE_CODES.has(cur.max) && pct) detail.push(`${Math.round(pct.max)} %`);
+    if (ACTIVE_CODES.has(cur.max) && layer && total) detail.push(`lag ${Math.round(layer.max)}/${Math.round(total.max)}`);
+  }
+  const temps = [["nozzle_c", "dyse"], ["bed_c", "seng"]]
+    .map(([m, label]) => { const p = last(m); return p ? `${label} ${fmtNum(p.avg, 0)} °C` : ""; })
+    .filter(Boolean).join(" · ");
+  const seen = [...new Set(segs.map(s => s[2]).filter(c => c !== null))].sort((a, b) => a - b);
+  const legend = seen.map(c => {
+    const [name, color] = STATES[c] || STATES["-1"];
+    return `<span><i style="background:${color}"></i>${name}</span>`;
+  }).join("");
+  return `<div class="card"><h2>Maskinstatus (fra printeren)</h2>` +
+    `<div class="value">${title}${detail.length ? ` <small>${detail.join(" · ")}</small>` : ""}</div>` +
+    `<div class="range">${temps || "&nbsp;"}</div>` +
+    bandSVG(segs, from, to) + `<div class="legend">${legend}</div></div>`;
 }
 
 async function refresh() {
@@ -109,10 +199,17 @@ async function refresh() {
   if (!id) return;
   const [secs, bucket] = $("range").value.split(",").map(Number);
   const to = Date.now(), from = to - secs * 1000;
-  const results = await Promise.all(METRICS.map(m =>
-    getJSON(`/machines/${encodeURIComponent(id)}/series?metric=${m.id}&from=${from}&to=${to}&bucket=${bucket}`)
-      .then(d => d.points || []).catch(() => [])));
-  const html = METRICS.map((m, i) => {
+  const series = metric =>
+    getJSON(`/machines/${encodeURIComponent(id)}/series?metric=${metric}&from=${from}&to=${to}&bucket=${bucket}`)
+      .then(d => d.points || []).catch(() => []);
+  const [results, statusResults] = await Promise.all([
+    Promise.all(METRICS.map(m => series(m.id))),
+    Promise.all(STATUS_METRICS.map(series)),
+  ]);
+  const st = Object.fromEntries(STATUS_METRICS.map((m, i) => [m, statusResults[i]]));
+  const segs = stateSegments(st.state_code, bucket * 1000);
+  const activeSpans = segs.filter(s => ACTIVE_CODES.has(s[2]));
+  const html = statusCard(st, segs, from, to) + METRICS.map((m, i) => {
     const pts = results[i];
     if (!pts.length) return `<div class="card"><h2>${m.title}</h2><div class="empty">Ingen data i valgt tidsrom</div></div>`;
     const last = pts[pts.length - 1];
@@ -120,7 +217,7 @@ async function refresh() {
     return `<div class="card"><h2>${m.title}</h2>` +
       `<div class="value">${fmtNum(last.avg, m.digits)} <small>${m.unit}</small></div>` +
       `<div class="range">min ${fmtNum(lo, m.digits)} · maks ${fmtNum(hi, m.digits)} ${m.unit}</div>` +
-      chartSVG(pts, m.color, m.digits) + `</div>`;
+      chartSVG(pts, m.color, m.digits, from, to, activeSpans) + `</div>`;
   }).join("");
   $("charts").innerHTML = html;
 }
