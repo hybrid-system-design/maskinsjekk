@@ -18,6 +18,7 @@ Structure and conventions were carried over from the user's temperature-monitor 
 cd server && go test ./...                                          # unit
 cd server && go test -run TestName ./internal/store                 # single test
 cd server && go test -run='^$' -fuzz=FuzzParseSensorMessage -fuzztime=30s ./internal/ingest
+cd server && go test -run='^$' -fuzz=FuzzParseShellyStatus -fuzztime=30s ./internal/ingest
 cd server && go test -tags integration -count=1 ./internal/integration/...   # needs Docker
 cd deploy && docker compose up -d --build                           # MQTT_PORT/HTTP_PORT env override host ports
 cd tools/simulator && go run . --hours 6 --live
@@ -32,7 +33,7 @@ CI (`.github/workflows/ci.yml`) also enforces `gofmt -l server tools` (must be e
 
 Data flow in `server/cmd/maskinsjekk/main.go`: `config.Load` (env vars) + `config.LoadMachines` (`machines.json`) → `store.Open` (migrates) + `SyncRegistry` → HTTP API (`internal/api`) and MQTT `ingest.Ingestor` run side by side, plus a `pruneLoop` for raw retention.
 
-- `ingest`: topic `hsd/<site>/<machine>/<sensor>`; JSON payload where **every numeric field becomes a metric** (new sensor types need no server change). Parsing (`parseSensorMessage`, `resolveEventTime`) is pure and fuzzed; bad messages are logged and dropped. Device `ts` is only trusted inside the sanity window, else arrival time is used.
+- `ingest`: topic `hsd/<site>/<machine>/<sensor>`; JSON payload where **every numeric field becomes a metric** (new sensor types need no server change). Parsing (`parseSensorMessage`, `resolveEventTime`) is pure and fuzzed; bad messages are logged and dropped. Device `ts` is only trusted inside the sanity window, else arrival time is used. Shelly Gen2+ meters are the one native-format exception: sensors of kind `shelly-gen2` in `machines.json` map an `mqtt_prefix`/`channel` to a machine, and `parseShellyStatus` (`shelly.go`, also fuzzed) reads `<prefix>/status/switch:N|pm1:N`.
 - `store`: `InsertMeasurements` writes raw rows and maintains `measurements_1m` rollups in the same transaction; `Series` serves buckets ≥ 1 min from rollups, finer from raw. Machines file entries win over auto-registered placeholders.
 - The MQTT payload and HTTP shapes are the contract (see README.md); change them deliberately.
 - Planned (see ROADMAP.md): state machine from vibration → Shelly power ingest → jobs/kWh → dashboard → ntfy alerts. `state_events` and `jobs` tables already exist but are unpopulated.

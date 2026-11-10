@@ -47,9 +47,11 @@ jobs:
         working-directory: server
         run: go tool cover -func=coverage.out | tail -n 1
 
-      - name: Fuzz the MQTT parser (short)
+      - name: Fuzz the MQTT parsers (short)
         working-directory: server
-        run: go test -run='^$' -fuzz=FuzzParseSensorMessage -fuzztime=30s ./internal/ingest
+        run: |
+          go test -run='^$' -fuzz=FuzzParseSensorMessage -fuzztime=30s ./internal/ingest
+          go test -run='^$' -fuzz=FuzzParseShellyStatus -fuzztime=20s ./internal/ingest
 
       - name: Build & vet simulator
         working-directory: tools/simulator

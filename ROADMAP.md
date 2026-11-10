@@ -22,7 +22,7 @@ Timeframe ~2 weeks. Working end-to-end before polish. One line per item, tick wh
 - [ ] Validate against the simulator's ground truth and the Bambu labels
 
 ## Phase 3 — Shelly: power as the primary signal
-- [ ] Ingest Shelly Gen2 status (`apower`, `aenergy.total`) mapped to a machine
+- [x] Ingest Shelly Gen2 status (`apower`, `aenergy.total`) mapped to a machine
 - [ ] Power primary, vibration confirms
 - [ ] Jobs with start/end and kWh; UNPLANNED_STOP heuristic (duration + power profile)
 

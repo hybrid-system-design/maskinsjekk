@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -89,7 +90,47 @@ type Machine struct {
 // Sensor is one data source attached to a machine (ESP32 node, power plug, ...).
 type Sensor struct {
 	ID   string `json:"id"`
-	Kind string `json:"kind"` // free text, e.g. "esp32-vibration", "shelly-plug"
+	Kind string `json:"kind"` // free text, e.g. "esp32-vibration"; KindShellyGen2 is special
+	// MQTTPrefix and Channel apply only to KindShellyGen2: the device's MQTT
+	// topic prefix as set in its web UI, and which switch/pm1 component to read
+	// (0 on single-channel devices such as plugs).
+	MQTTPrefix string `json:"mqtt_prefix,omitempty"`
+	Channel    int    `json:"channel,omitempty"`
+}
+
+// KindShellyGen2 marks a Shelly Gen2+ device (Plus/Pro/Gen3/Gen4) publishing
+// its native status over MQTT. The server subscribes to its prefix and maps it
+// to this machine/sensor, so the device needs no custom firmware or bridge.
+const KindShellyGen2 = "shelly-gen2"
+
+// maxShellyChannel bounds Channel; the largest Shelly devices have 4 channels.
+const maxShellyChannel = 15
+
+// ShellyDevice is a Shelly sensor resolved to where its data is stored.
+type ShellyDevice struct {
+	Prefix    string
+	Channel   int
+	SiteID    string
+	MachineID string
+	SensorID  string
+}
+
+// ShellyDevices lists every KindShellyGen2 sensor in the machines file.
+func (m Machines) ShellyDevices() []ShellyDevice {
+	var out []ShellyDevice
+	for _, s := range m.Sites {
+		for _, mc := range s.Machines {
+			for _, sn := range mc.Sensors {
+				if sn.Kind == KindShellyGen2 {
+					out = append(out, ShellyDevice{
+						Prefix: sn.MQTTPrefix, Channel: sn.Channel,
+						SiteID: s.ID, MachineID: mc.ID, SensorID: sn.ID,
+					})
+				}
+			}
+		}
+	}
+	return out
 }
 
 // LoadMachines reads the machines file. A missing file yields an empty set (the
@@ -114,6 +155,7 @@ func LoadMachines(path string) (Machines, error) {
 
 func (m Machines) validate() error {
 	machines := map[string]bool{}
+	shelly := map[string]bool{}
 	for _, s := range m.Sites {
 		if !ValidID(s.ID) {
 			return fmt.Errorf("invalid site id %q", s.ID)
@@ -130,10 +172,45 @@ func (m Machines) validate() error {
 				if !ValidID(sn.ID) {
 					return fmt.Errorf("invalid sensor id %q on machine %q", sn.ID, mc.ID)
 				}
+				if sn.Kind != KindShellyGen2 {
+					if sn.MQTTPrefix != "" || sn.Channel != 0 {
+						return fmt.Errorf("sensor %s/%s: mqtt_prefix/channel only apply to kind %q", mc.ID, sn.ID, KindShellyGen2)
+					}
+					continue
+				}
+				if !validTopicPrefix(sn.MQTTPrefix) {
+					return fmt.Errorf("sensor %s/%s: invalid mqtt_prefix %q", mc.ID, sn.ID, sn.MQTTPrefix)
+				}
+				if sn.Channel < 0 || sn.Channel > maxShellyChannel {
+					return fmt.Errorf("sensor %s/%s: channel %d out of range 0-%d", mc.ID, sn.ID, sn.Channel, maxShellyChannel)
+				}
+				key := fmt.Sprintf("%s#%d", sn.MQTTPrefix, sn.Channel)
+				if shelly[key] {
+					return fmt.Errorf("sensor %s/%s: mqtt_prefix %q channel %d is used twice", mc.ID, sn.ID, sn.MQTTPrefix, sn.Channel)
+				}
+				shelly[key] = true
 			}
 		}
 	}
 	return nil
+}
+
+// validTopicPrefix accepts a concrete MQTT topic prefix: 1-128 chars, no
+// wildcards or empty levels, and outside the hsd/ namespace so it can't collide
+// with the sensor subscription.
+func validTopicPrefix(p string) bool {
+	if len(p) == 0 || len(p) > 128 || strings.ContainsAny(p, "+#\x00") {
+		return false
+	}
+	if p == "hsd" || strings.HasPrefix(p, "hsd/") || strings.HasPrefix(p, "$") {
+		return false
+	}
+	for _, level := range strings.Split(p, "/") {
+		if level == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidID reports whether s is a usable site/machine/sensor/metric id:

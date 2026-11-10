@@ -9,7 +9,8 @@
           "name": "3D-printer",
           "sensors": [
             { "id": "esp32-1", "kind": "esp32-vibration" },
-            { "id": "bambu", "kind": "bambu-status" }
+            { "id": "bambu", "kind": "bambu-status" },
+            { "id": "shelly-1", "kind": "shelly-gen2", "mqtt_prefix": "shelly-printer-1" }
           ]
         },
         {

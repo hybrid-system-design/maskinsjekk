@@ -102,6 +102,15 @@ func TestPipeline(t *testing.T) {
 		pub.send(t, "bad-1", map[string]float64{"vib_rms": 0.7}, time.Now())
 		waitForMetric(t, baseURL, "bad-1", "vib_rms", 0.7, 10*time.Second)
 	})
+
+	t.Run("shelly_status", func(t *testing.T) {
+		// Native Shelly Plug S Gen3 status, mapped to plug-1/shelly-1 by the
+		// machines file.
+		pub.raw(t, "itest-shelly/status/switch:0", []byte(`{"id":0, "source":"init", "output":true, "apower":182.5, "voltage":231.2, "freq":50.0, "current":0.810, "aenergy":{"total":13.000,"by_minute":[0.000,0.000,0.000],"minute_ts":1794317880}, "ret_aenergy":{"total":0.000,"by_minute":[0.000,0.000,0.000],"minute_ts":1794317880},"temperature":{"tC":35.8, "tF":96.5}}`))
+		waitForMetric(t, baseURL, "plug-1", "power_w", 182.5, 10*time.Second)
+		waitForMetric(t, baseURL, "plug-1", "energy_wh", 13, 10*time.Second)
+		waitForMetric(t, baseURL, "plug-1", "output", 1, 10*time.Second)
+	})
 }
 
 // TestAutoRegisterOff drops messages for machines not in the machines file.
@@ -187,7 +196,8 @@ func startBroker(t *testing.T) string {
 }
 
 // startService boots the store + HTTP API + MQTT ingestor in-process and returns
-// the API base URL. Machine "known-1" is always pre-registered.
+// the API base URL. Machine "known-1" is always pre-registered, as is "plug-1"
+// with a Shelly sensor on prefix "itest-shelly".
 func startService(t *testing.T, brokerURL string, autoRegister bool) string {
 	t.Helper()
 	cfg := config.Config{
@@ -206,17 +216,22 @@ func startService(t *testing.T, brokerURL string, autoRegister bool) string {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	if err := st.SyncRegistry(context.Background(), config.Machines{Sites: []config.Site{{
-		ID: "itest", Machines: []config.Machine{{ID: "known-1"}},
-	}}}); err != nil {
+	machines := config.Machines{Sites: []config.Site{{
+		ID: "itest", Machines: []config.Machine{
+			{ID: "known-1"},
+			{ID: "plug-1", Sensors: []config.Sensor{{ID: "shelly-1", Kind: config.KindShellyGen2, MQTTPrefix: "itest-shelly"}}},
+		},
+	}}}
+	if err := st.SyncRegistry(context.Background(), machines); err != nil {
 		t.Fatalf("SyncRegistry: %v", err)
 	}
+	shelly := machines.ShellyDevices()
 
 	logger := log.New(io.Discard, "", 0)
 	ts := httptest.NewServer(api.New(st, cfg, logger).Handler())
 	t.Cleanup(ts.Close)
 
-	ing := ingest.New(cfg, st, logger)
+	ing := ingest.New(cfg, st, shelly, logger)
 	if err := ing.Start(); err != nil {
 		t.Fatalf("ingest.Start: %v", err)
 	}

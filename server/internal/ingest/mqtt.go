@@ -8,6 +8,9 @@
 //
 // Every numeric field other than "ts" becomes a metric, so a new sensor type
 // needs no server change (e.g. {"ts":..., "vib_rms":0.012, "temp_c":24.1}).
+//
+// Shelly Gen2+ power meters are read in their native format instead; see
+// shelly.go.
 package ingest
 
 import (
@@ -36,11 +39,20 @@ type Ingestor struct {
 	store  *store.Store
 	log    *log.Logger
 	client mqtt.Client
+	// shelly maps each subscribed Shelly status topic to its machine/sensor.
+	shelly map[string]config.ShellyDevice
 }
 
-// New constructs an Ingestor.
-func New(cfg config.Config, st *store.Store, logger *log.Logger) *Ingestor {
-	return &Ingestor{cfg: cfg, store: st, log: logger}
+// New constructs an Ingestor. shelly lists the Shelly devices from the
+// machines file (config.Machines.ShellyDevices); it may be empty.
+func New(cfg config.Config, st *store.Store, shelly []config.ShellyDevice, logger *log.Logger) *Ingestor {
+	topics := map[string]config.ShellyDevice{}
+	for _, d := range shelly {
+		for _, t := range shellyTopics(d) {
+			topics[t] = d
+		}
+	}
+	return &Ingestor{cfg: cfg, store: st, log: logger, shelly: topics}
 }
 
 // Start connects to the broker and subscribes. With connect-retry enabled it
@@ -59,7 +71,14 @@ func (in *Ingestor) Start() error {
 			in.log.Printf("mqtt: connected, subscribing to %q", in.cfg.MQTTTopic)
 			// CleanSession drops subscriptions on reconnect, so re-subscribe
 			// every time we (re)connect.
-			t := c.Subscribe(in.cfg.MQTTTopic, 1, in.handle)
+			filters := map[string]byte{in.cfg.MQTTTopic: 1}
+			for topic := range in.shelly {
+				filters[topic] = 1
+			}
+			if len(in.shelly) > 0 {
+				in.log.Printf("mqtt: also subscribing to %d Shelly status topics", len(in.shelly))
+			}
+			t := c.SubscribeMultiple(filters, in.route)
 			if t.Wait() && t.Error() != nil {
 				in.log.Printf("mqtt: subscribe error: %v", t.Error())
 			}
@@ -86,11 +105,21 @@ func (in *Ingestor) Stop() {
 	}
 }
 
-// handle validates and stores one incoming message. It never panics or returns
-// errors upward; ingestion must survive any malformed input.
-func (in *Ingestor) handle(_ mqtt.Client, msg mqtt.Message) {
+// route validates and stores one incoming message, picking the parser by topic.
+// It never panics or returns errors upward; ingestion must survive any
+// malformed input.
+func (in *Ingestor) route(_ mqtt.Client, msg mqtt.Message) {
 	now := time.Now()
-	ms, reason, ok := parseSensorMessage(msg.Topic(), msg.Payload(), now, in.cfg.SanityPast, in.cfg.SanityFuture)
+	var (
+		ms     []store.Measurement
+		reason string
+		ok     bool
+	)
+	if d, isShelly := in.shelly[msg.Topic()]; isShelly {
+		ms, reason, ok = parseShellyStatus(msg.Payload(), d, now)
+	} else {
+		ms, reason, ok = parseSensorMessage(msg.Topic(), msg.Payload(), now, in.cfg.SanityPast, in.cfg.SanityFuture)
+	}
 	if !ok {
 		in.log.Printf("ingest: drop message on %q: %s", msg.Topic(), reason)
 		return

@@ -57,7 +57,7 @@ func main() {
 	}()
 
 	// MQTT ingest.
-	ing := ingest.New(cfg, st, logger)
+	ing := ingest.New(cfg, st, machines.ShellyDevices(), logger)
 	if err := ing.Start(); err != nil {
 		logger.Fatalf("mqtt: %v", err)
 	}

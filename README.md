@@ -58,6 +58,35 @@ Host ports are overridable to run next to another stack:
 - **Status:** `hsd/<site>/<machine>/<sensor>/status` — retained `online`, or
   `offline` via MQTT last will.
 
+### MQTT (Shelly Gen2+ power meters)
+
+Shelly Plus/Pro/Gen3/Gen4 devices are read in their **native** format, so they
+need no custom firmware or bridge. Map each one in `machines.json` with kind
+`shelly-gen2`, the topic prefix set in the device's web UI, and (on
+multi-channel devices) which channel:
+
+```json
+{ "id": "shelly-1", "kind": "shelly-gen2", "mqtt_prefix": "shelly-printer-1", "channel": 0 }
+```
+
+The server subscribes to `<prefix>/status/switch:<channel>` and
+`<prefix>/status/pm1:<channel>` and stores, under that machine/sensor, whichever
+of these the device reports:
+
+| metric | source field | meaning |
+|---|---|---|
+| `power_w` | `apower` | active power, W |
+| `energy_wh` | `aenergy.total` | lifetime energy counter, Wh |
+| `voltage_v` / `current_a` / `freq_hz` / `pf` | `voltage` / `current` / `freq` / `pf` | mains readings |
+| `temp_c` | `temperature.tC` | device's own temperature |
+| `output` | `output` | relay state 1/0 (switch devices only) |
+
+Shelly status has no reading timestamp, so arrival time is used. Device setup:
+Settings → MQTT → enable, server `<broker-host>:1883`, no TLS, a readable client
+id / prefix, and **"Generic status update over MQTT"** on. Set the relay's
+power-on default to ON (or restore last) so the machine gets power back after an
+outage; the system never switches it.
+
 **Timestamp rule:** a device `ts` is honored only within
 `[now − SANITY_PAST, now + SANITY_FUTURE]` (default 50h / 5min); otherwise the
 server's arrival time is used. That accepts a simulator backfill and rejects
@@ -220,11 +249,12 @@ and e.g. Home Assistant count too).
 cd server
 go test ./...                                                   # unit (fast, no Docker)
 go test -run='^$' -fuzz=FuzzParseSensorMessage -fuzztime=30s ./internal/ingest
+go test -run='^$' -fuzz=FuzzParseShellyStatus -fuzztime=30s ./internal/ingest
 go test -tags integration -count=1 ./internal/integration/...   # needs Docker running
 ```
 
 The integration suite runs a real Mosquitto via testcontainers and covers the
-round trip, honoring device timestamps on backfill, bad-payload resilience,
+round trip, native Shelly status mapping, honoring device timestamps on backfill, bad-payload resilience,
 `AUTO_REGISTER=false`, and reconnecting after a network drop. CI runs everything
 above plus the Bambu bridge tests (`cd tools/bambu-bridge && go test ./...`),
 a Docker smoke test and the firmware compile.
