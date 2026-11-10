@@ -7,11 +7,11 @@
 <style>
   :root {
     --bg: #f5f6f8; --card: #fff; --text: #1b2430; --muted: #6b7686; --line: #e3e7ed;
-    --temp: #d9480f; --vib: #1c7ed6; --ok: #2f9e44; --bad: #e03131; --active: #2f9e44;
+    --temp: #d9480f; --vib: #1c7ed6; --power: #7048e8; --ok: #2f9e44; --bad: #e03131; --active: #2f9e44;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #11151b; --card: #1a2029; --text: #e6eaf0; --muted: #8b96a6; --line: #2a323e;
-            --temp: #ff8a4c; --vib: #5aa9ff; --ok: #51cf66; --bad: #ff6b6b; --active: #51cf66; }
+            --temp: #ff8a4c; --vib: #5aa9ff; --power: #9775fa; --ok: #51cf66; --bad: #ff6b6b; --active: #51cf66; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
@@ -54,7 +54,10 @@
   <div id="charts"></div>
 </main>
 <script>
+// optional: the card is left out (instead of "no data") for machines that have
+// no such sensor, e.g. power on a machine without a power meter.
 const METRICS = [
+  { id: "power_w", title: "Effekt", unit: "W", color: "var(--power)", digits: 0, optional: true },
   { id: "temp_c",  title: "Temperatur", unit: "°C", color: "var(--temp)", digits: 1 },
   { id: "vib_rms", title: "Vibrasjon (RMS)", unit: "g", color: "var(--vib)", digits: 4 },
 ];
@@ -66,7 +69,7 @@ const STATES = {
   6: ["Slicer", "#7048e8"], "-1": ["Ukjent", "#adb5bd"],
 };
 const ACTIVE_CODES = new Set([1, 2, 3, 6]);
-const STATUS_METRICS = ["state_code", "printer_reachable", "percent", "layer", "total_layers", "nozzle_c", "bed_c"];
+const STATUS_METRICS = ["state_code", "printer_reachable", "percent", "layer", "total_layers", "nozzle_c", "bed_c", "energy_wh", "output"];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => new Date(ms).toLocaleTimeString("nb-NO", { hour: "2-digit", minute: "2-digit" });
 const fmtNum = (v, d) => v.toLocaleString("nb-NO", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -194,6 +197,21 @@ function statusCard(st, segs, from, to) {
     bandSVG(segs, from, to) + `<div class="legend">${legend}</div></div>`;
 }
 
+// powerExtras adds energy used in the range (from the meter's lifetime Wh
+// counter) and warns when the meter's relay is off, since the machine then has
+// no power at all.
+function powerExtras(st) {
+  const parts = [];
+  const e = st.energy_wh;
+  if (e.length) {
+    const used = e[e.length - 1].max - e[0].min;
+    if (used >= 0) parts.push(used >= 1000 ? `${fmtNum(used / 1000, 2)} kWh i perioden` : `${fmtNum(used, 0)} Wh i perioden`);
+  }
+  const o = st.output;
+  if (o.length && o[o.length - 1].max === 0) parts.push(`<b style="color:var(--bad)">relé av</b>`);
+  return parts.length ? " · " + parts.join(" · ") : "";
+}
+
 async function refresh() {
   const id = $("machine").value;
   if (!id) return;
@@ -211,12 +229,14 @@ async function refresh() {
   const activeSpans = segs.filter(s => ACTIVE_CODES.has(s[2]));
   const html = statusCard(st, segs, from, to) + METRICS.map((m, i) => {
     const pts = results[i];
+    if (!pts.length && m.optional) return "";
     if (!pts.length) return `<div class="card"><h2>${m.title}</h2><div class="empty">Ingen data i valgt tidsrom</div></div>`;
     const last = pts[pts.length - 1];
     const lo = Math.min(...pts.map(p => p.min)), hi = Math.max(...pts.map(p => p.max));
+    const extra = m.id === "power_w" ? powerExtras(st) : "";
     return `<div class="card"><h2>${m.title}</h2>` +
       `<div class="value">${fmtNum(last.avg, m.digits)} <small>${m.unit}</small></div>` +
-      `<div class="range">min ${fmtNum(lo, m.digits)} · maks ${fmtNum(hi, m.digits)} ${m.unit}</div>` +
+      `<div class="range">min ${fmtNum(lo, m.digits)} · maks ${fmtNum(hi, m.digits)} ${m.unit}${extra}</div>` +
       chartSVG(pts, m.color, m.digits, from, to, activeSpans) + `</div>`;
   }).join("");
   $("charts").innerHTML = html;

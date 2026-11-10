@@ -54,7 +54,9 @@ func shellyTopics(d config.ShellyDevice) []string {
 // used. Like parseSensorMessage it is pure and fuzzed; ok=false means drop.
 //
 // Metrics: power_w, voltage_v, current_a, freq_hz, pf, energy_wh (lifetime
-// counter, Wh), temp_c (device temperature), output (relay 1/0, switch only).
+// counter, Wh), device_temp_c (the meter's own temperature; named apart from
+// a machine sensor's temp_c because series are keyed by machine + metric),
+// output (relay 1/0, switch only).
 func parseShellyStatus(raw []byte, d config.ShellyDevice, now time.Time) ([]store.Measurement, string, bool) {
 	var st shellyStatus
 	if err := json.Unmarshal(raw, &st); err != nil {
@@ -81,7 +83,7 @@ func parseShellyStatus(raw []byte, d config.ShellyDevice, now time.Time) ([]stor
 		add("energy_wh", st.AEnergy.Total)
 	}
 	if st.Temperature != nil {
-		add("temp_c", st.Temperature.TC)
+		add("device_temp_c", st.Temperature.TC)
 	}
 	if st.Output != nil {
 		v := 0.0

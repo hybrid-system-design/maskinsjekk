@@ -32,7 +32,7 @@ func TestParseShellyStatus(t *testing.T) {
 		}
 		want := map[string]float64{
 			"power_w": 0, "voltage_v": 231.2, "current_a": 0, "freq_hz": 50,
-			"energy_wh": 13, "temp_c": 35.8, "output": 0,
+			"energy_wh": 13, "device_temp_c": 35.8, "output": 0,
 		}
 		if len(got) != len(want) {
 			t.Fatalf("got metrics %v, want %v", got, want)
@@ -57,7 +57,7 @@ func TestParseShellyStatus(t *testing.T) {
 			t.Fatalf("ok=%v ms=%+v", ok, ms)
 		}
 		for _, m := range ms {
-			if m.Metric == "output" || m.Metric == "temp_c" {
+			if m.Metric == "output" || m.Metric == "device_temp_c" {
 				t.Fatalf("absent field stored: %+v", m)
 			}
 		}

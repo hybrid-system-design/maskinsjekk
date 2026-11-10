@@ -78,7 +78,7 @@ of these the device reports:
 | `power_w` | `apower` | active power, W |
 | `energy_wh` | `aenergy.total` | lifetime energy counter, Wh |
 | `voltage_v` / `current_a` / `freq_hz` / `pf` | `voltage` / `current` / `freq` / `pf` | mains readings |
-| `temp_c` | `temperature.tC` | device's own temperature |
+| `device_temp_c` | `temperature.tC` | the meter's own temperature (not `temp_c`: series are keyed by machine + metric, so it would mix with a machine sensor's `temp_c`) |
 | `output` | `output` | relay state 1/0 (switch devices only) |
 
 Shelly status has no reading timestamp, so arrival time is used. Device setup:
