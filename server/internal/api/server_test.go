@@ -170,3 +170,68 @@ func TestIndexPage(t *testing.T) {
 		t.Fatalf("unknown path should 404, got %v %v", r2, err)
 	}
 }
+
+func TestStateAndTimeline(t *testing.T) {
+	ts, st := newTestServer(t)
+	seed(t, st, "printer-1", now, 0.1)
+	ctx := context.Background()
+
+	var cur struct {
+		State   *string `json:"state"`
+		Since   *string `json:"since"`
+		SinceTS *int64  `json:"since_ts"`
+		Reason  string  `json:"reason"`
+	}
+	if code := get(t, ts.URL+"/machines/printer-1/state", &cur); code != 200 || cur.State != nil {
+		t.Fatalf("no state yet: code=%d %+v", code, cur)
+	}
+
+	h := func(n int) int64 { return now.Add(time.Duration(n) * time.Hour).UnixMilli() }
+	for _, ev := range []struct {
+		state string
+		start int64
+	}{{"OFF", h(-30)}, {"IDLE", h(-5)}, {"RUNNING", h(-2)}} {
+		if err := st.RecordState(ctx, "printer-1", ev.state, ev.start, "power=150"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	get(t, ts.URL+"/machines/printer-1/state", &cur)
+	if cur.State == nil || *cur.State != "RUNNING" || *cur.SinceTS != h(-2) || cur.Reason != "power=150" {
+		t.Fatalf("state: %+v", cur)
+	}
+
+	var tl struct {
+		Segments []segment `json:"segments"`
+	}
+	// Default range (last 24 h): OFF clipped to the range start, RUNNING open.
+	if code := get(t, ts.URL+"/machines/printer-1/timeline", &tl); code != 200 || len(tl.Segments) != 3 {
+		t.Fatalf("timeline: code=%d %+v", code, tl)
+	}
+	s := tl.Segments
+	if s[0].State != "OFF" || s[0].StartTS != h(-24) || *s[0].EndTS != h(-5) {
+		t.Errorf("first segment not clipped: %+v", s[0])
+	}
+	if s[2].State != "RUNNING" || s[2].End != nil || s[2].EndTS != nil {
+		t.Errorf("ongoing segment: %+v", s[2])
+	}
+
+	// A range ending inside IDLE clips its end and leaves RUNNING out.
+	url := ts.URL + "/machines/printer-1/timeline?from=" + strconv.FormatInt(h(-6), 10) + "&to=" + strconv.FormatInt(h(-3), 10)
+	get(t, url, &tl)
+	if len(tl.Segments) != 2 || tl.Segments[1].State != "IDLE" || *tl.Segments[1].EndTS != h(-3) {
+		t.Errorf("clipped range: %+v", tl.Segments)
+	}
+
+	cases := map[string]int{
+		"/machines/nope/state":                         404,
+		"/machines/nope/timeline":                      404,
+		"/machines/printer-1/timeline?from=yesterday":  400,
+		"/machines/printer-1/timeline?from=2000&to=10": 400,
+	}
+	for path, want := range cases {
+		if code := get(t, ts.URL+path, nil); code != want {
+			t.Errorf("%s: code %d, want %d", path, code, want)
+		}
+	}
+}

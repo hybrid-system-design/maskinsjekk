@@ -1,6 +1,6 @@
-// Package api serves the HTTP JSON endpoints. Phase 1 exposes the machine
-// registry and raw/downsampled metric series; state, metrics, timeline and jobs
-// endpoints arrive with the state machine (Phase 2+) and dashboard (Phase 4).
+// Package api serves the HTTP JSON endpoints: the machine registry,
+// raw/downsampled metric series, and detected machine states. Metrics and jobs
+// endpoints arrive with jobs (Phase 3) and the dashboard (Phase 4).
 // Responses include permissive CORS so a browser dashboard can read them.
 package api
 
@@ -43,6 +43,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /machines", s.handleMachines)
 	mux.HandleFunc("GET /machines/{id}/series", s.handleSeries)
+	mux.HandleFunc("GET /machines/{id}/state", s.handleState)
+	mux.HandleFunc("GET /machines/{id}/timeline", s.handleTimeline)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /{$}", handleIndex)
 	return cors(mux)
@@ -114,14 +116,7 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "metric is required")
 		return
 	}
-	known, err := s.store.MachineExists(r.Context(), machineID)
-	if err != nil {
-		s.log.Printf("api: series %s: %v", machineID, err)
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if !known {
-		writeErr(w, http.StatusNotFound, "machine not found")
+	if !s.machineKnown(w, r, machineID) {
 		return
 	}
 
@@ -171,6 +166,97 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		"from":           rfc3339(fromMS),
 		"to":             rfc3339(toMS),
 		"points":         points,
+	})
+}
+
+// machineKnown writes a 404 (or 500) and returns false unless the machine exists.
+func (s *Server) machineKnown(w http.ResponseWriter, r *http.Request, machineID string) bool {
+	known, err := s.store.MachineExists(r.Context(), machineID)
+	if err != nil {
+		s.log.Printf("api: machine %s: %v", machineID, err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return false
+	}
+	if !known {
+		writeErr(w, http.StatusNotFound, "machine not found")
+		return false
+	}
+	return true
+}
+
+// handleState: GET /machines/{id}/state — the current detected state; state
+// is null for a machine without state rules (or before the first evaluation).
+func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
+	machineID := r.PathValue("id")
+	if !s.machineKnown(w, r, machineID) {
+		return
+	}
+	ev, ok, err := s.store.CurrentState(r.Context(), machineID)
+	if err != nil {
+		s.log.Printf("api: state %s: %v", machineID, err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	out := map[string]any{"machine_id": machineID, "state": nil, "since": nil, "since_ts": nil, "reason": ""}
+	if ok {
+		out["state"], out["since"], out["since_ts"], out["reason"] = ev.State, rfc3339(ev.Start), ev.Start, ev.Reason
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type segment struct {
+	State   string  `json:"state"`
+	Start   string  `json:"start"`
+	StartTS int64   `json:"start_ts"`
+	End     *string `json:"end"`    // null while ongoing
+	EndTS   *int64  `json:"end_ts"` // null while ongoing
+}
+
+// handleTimeline: GET /machines/{id}/timeline?from=&to= — state intervals
+// overlapping the range (default: last 24h), clipped to it. The ongoing state
+// has end null.
+func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	machineID := r.PathValue("id")
+	q := r.URL.Query()
+	nowMS := s.now().UnixMilli()
+	toMS, ok := parseTime(q.Get("to"), nowMS)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "to must be RFC3339 or unix ms")
+		return
+	}
+	fromMS, ok := parseTime(q.Get("from"), toMS-24*time.Hour.Milliseconds())
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "from must be RFC3339 or unix ms")
+		return
+	}
+	if fromMS >= toMS {
+		writeErr(w, http.StatusBadRequest, "from must be before to")
+		return
+	}
+	if !s.machineKnown(w, r, machineID) {
+		return
+	}
+	evs, err := s.store.StateEvents(r.Context(), machineID, fromMS, toMS)
+	if err != nil {
+		s.log.Printf("api: timeline %s: %v", machineID, err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	segs := make([]segment, 0, len(evs))
+	for _, ev := range evs {
+		start := max(ev.Start, fromMS)
+		sg := segment{State: ev.State, Start: rfc3339(start), StartTS: start}
+		if ev.End != 0 {
+			end := min(ev.End, toMS)
+			sg.End, sg.EndTS = msToRFC3339(end), &end
+		}
+		segs = append(segs, sg)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"machine_id": machineID,
+		"from":       rfc3339(fromMS),
+		"to":         rfc3339(toMS),
+		"segments":   segs,
 	})
 }
 

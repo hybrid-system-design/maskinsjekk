@@ -5,6 +5,10 @@
 // with some jobs aborted mid-run (unplanned stops). The true state is logged on
 // every transition, which doubles as ground truth for testing state detection.
 //
+// It publishes two sensors: vibration + temperature (as an ESP32 node would)
+// and power (as a smart plug would), so the full state machine can be
+// exercised.
+//
 // It first backfills the last N hours (each message carries its true past
 // timestamp, which the server honors via its sanity window), then — with
 // --live — keeps emitting fresh samples once per second.
@@ -29,7 +33,8 @@ func main() {
 	broker := flag.String("broker", "tcp://localhost:1883", "MQTT broker URL")
 	site := flag.String("site", "demo", "site id")
 	machineID := flag.String("machine", "sim-printer", "machine id (defaults to 'sim-printer' so demo data never mixes with a real machine)")
-	sensor := flag.String("sensor", "esp32-1", "sensor id")
+	sensor := flag.String("sensor", "esp32-1", "vibration/temperature sensor id")
+	powerSensor := flag.String("power-sensor", "power", "power sensor id (empty = don't publish power)")
 	hours := flag.Float64("hours", 6, "hours of history to backfill (0 = none)")
 	step := flag.Duration("step", 5*time.Second, "interval between backfilled samples")
 	live := flag.Bool("live", false, "after backfill, keep publishing a sample every second")
@@ -38,6 +43,10 @@ func main() {
 	flag.Parse()
 
 	topic := "hsd/" + *site + "/" + *machineID + "/" + *sensor
+	powerTopic := ""
+	if *powerSensor != "" {
+		powerTopic = "hsd/" + *site + "/" + *machineID + "/" + *powerSensor
+	}
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(*broker).
@@ -57,7 +66,7 @@ func main() {
 
 	count := 0
 	for t := from; t.Before(now); t = t.Add(*step) {
-		publish(client, topic, m.step(t, *step))
+		publish(client, topic, powerTopic, m.step(t, *step))
 		count++
 	}
 	log.Printf("backfilled %d samples over %.1fh", count, *hours)
@@ -69,7 +78,7 @@ func main() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for tNow := range ticker.C {
-		publish(client, topic, m.step(tNow, time.Second))
+		publish(client, topic, powerTopic, m.step(tNow, time.Second))
 	}
 }
 
@@ -88,6 +97,7 @@ type reading struct {
 	ts     time.Time
 	vibRMS float64 // g, gravity removed
 	tempC  float64 // ambient near the machine
+	powerW float64 // at the plug
 }
 
 // machine is a small stochastic state model. Segment lengths are drawn from the
@@ -169,34 +179,43 @@ func (m *machine) step(t time.Time, dt time.Duration) reading {
 	}
 
 	noise := func(scale float64) float64 { return m.rng.NormFloat64() * scale }
-	var vib, targetTemp float64
+	var vib, targetTemp, power float64
 	switch m.state {
 	case off:
-		vib, targetTemp = 0.002+math.Abs(noise(0.0005)), 22
+		vib, targetTemp, power = 0.002+math.Abs(noise(0.0005)), 22, 0
 	case heating:
 		vib, targetTemp = 0.005+math.Abs(noise(0.001)), 27 // fans only
+		power = 250 + noise(20)                            // heaters on full
 	case running:
 		// Motion-dominated, with slow variation as the toolpath changes.
 		wobble := 0.03 * math.Sin(float64(t.Unix())/90)
 		vib, targetTemp = math.Max(0.02, 0.08+wobble+noise(0.012)), 31
+		power = 150 + noise(15) // heaters holding temperature, motors
 	case idle:
-		vib, targetTemp = 0.004+math.Abs(noise(0.001)), 26
+		vib, targetTemp, power = 0.004+math.Abs(noise(0.001)), 26, 9+noise(0.5) // standby
 	}
 	// First-order thermal lag (~10 min time constant).
 	alpha := 1 - math.Exp(-dt.Seconds()/600)
 	m.tempC += (targetTemp - m.tempC) * alpha
 
-	return reading{ts: t, vibRMS: vib, tempC: m.tempC + noise(0.05)}
+	return reading{ts: t, vibRMS: vib, tempC: m.tempC + noise(0.05), powerW: math.Max(0, power)}
 }
 
 // --- publishing ---
 
-func publish(client mqtt.Client, topic string, r reading) {
-	payload, err := json.Marshal(map[string]any{
+func publish(client mqtt.Client, topic, powerTopic string, r reading) {
+	send(client, topic, map[string]any{
 		"ts":      r.ts.UnixMilli(),
 		"vib_rms": round(r.vibRMS, 4),
 		"temp_c":  round(r.tempC, 2),
 	})
+	if powerTopic != "" {
+		send(client, powerTopic, map[string]any{"ts": r.ts.UnixMilli(), "power_w": round(r.powerW, 1)})
+	}
+}
+
+func send(client mqtt.Client, topic string, msg map[string]any) {
+	payload, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("marshal: %v", err)
 		return

@@ -69,6 +69,12 @@ const STATES = {
   6: ["Slicer", "#7048e8"], "-1": ["Ukjent", "#adb5bd"],
 };
 const ACTIVE_CODES = new Set([1, 2, 3, 6]);
+// Detected state (the server's state machine, /machines/{id}/timeline).
+const DETECTED = {
+  OFF: ["Av", "#495057"], IDLE: ["Ledig", "#868e96"], HEATING: ["Varmer opp", "#f08c00"],
+  RUNNING: ["I drift", "#2f9e44"], UNKNOWN: ["Ukjent", "var(--line)"],
+};
+const BUSY = new Set(["HEATING", "RUNNING"]);
 const STATUS_METRICS = ["state_code", "printer_reachable", "percent", "layer", "total_layers", "nozzle_c", "bed_c", "energy_wh", "output"];
 const $ = id => document.getElementById(id);
 const fmtTime = ms => new Date(ms).toLocaleTimeString("nb-NO", { hour: "2-digit", minute: "2-digit" });
@@ -118,13 +124,13 @@ function stateSegments(points, bucketMS) {
   return segs;
 }
 
+// bandSVG draws [from, to, fill] spans as a horizontal band.
 function bandSVG(segs, t0, t1) {
   const W = 800, H = 44, L = 8, R = 8, T = 4, B = 20;
   const x = xScale(t0, t1, W, L, R);
-  const rects = segs.map(([a, b, code]) => {
+  const rects = segs.map(([a, b, fill]) => {
     const xa = Math.max(x(a), L), xb = Math.min(x(b), W - R);
     if (xb <= xa) return "";
-    const fill = code === null ? "var(--line)" : (STATES[code] || STATES["-1"])[1];
     return `<rect x="${xa.toFixed(1)}" y="${T}" width="${(xb - xa).toFixed(1)}" height="${H - T - B}" fill="${fill}"/>`;
   }).join("");
   return `<svg class="band" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
@@ -194,6 +200,22 @@ function statusCard(st, segs, from, to) {
   return `<div class="card"><h2>Maskinstatus (fra printeren)</h2>` +
     `<div class="value">${title}${detail.length ? ` <small>${detail.join(" · ")}</small>` : ""}</div>` +
     `<div class="range">${temps || "&nbsp;"}</div>` +
+    bandSVG(segs.map(([a, b, c]) => [a, b, c === null ? "var(--line)" : (STATES[c] || STATES["-1"])[1]]), from, to) +
+    `<div class="legend">${legend}</div></div>`;
+}
+
+// detectedCard renders the state machine's current state and timeline, or ""
+// for a machine without state rules.
+function detectedCard(cur, tl, from, to) {
+  if (!cur || !cur.state) return "";
+  const [name] = DETECTED[cur.state] || DETECTED.UNKNOWN;
+  const segs = tl.map(s => [s.start_ts, s.end_ts ?? to, (DETECTED[s.state] || DETECTED.UNKNOWN)[1]]);
+  const seen = [...new Set(tl.map(s => s.state))];
+  const legend = Object.keys(DETECTED).filter(k => seen.includes(k))
+    .map(k => `<span><i style="background:${DETECTED[k][1]}"></i>${DETECTED[k][0]}</span>`).join("");
+  return `<div class="card"><h2>Tilstand (beregnet fra sensorene)</h2>` +
+    `<div class="value">${name} <small>siden ${fmtTime(cur.since_ts)}</small></div>` +
+    `<div class="range">${cur.reason || "&nbsp;"}</div>` +
     bandSVG(segs, from, to) + `<div class="legend">${legend}</div></div>`;
 }
 
@@ -220,14 +242,21 @@ async function refresh() {
   const series = metric =>
     getJSON(`/machines/${encodeURIComponent(id)}/series?metric=${metric}&from=${from}&to=${to}&bucket=${bucket}`)
       .then(d => d.points || []).catch(() => []);
-  const [results, statusResults] = await Promise.all([
+  const base = `/machines/${encodeURIComponent(id)}`;
+  const [results, statusResults, cur, tl] = await Promise.all([
     Promise.all(METRICS.map(m => series(m.id))),
     Promise.all(STATUS_METRICS.map(series)),
+    getJSON(`${base}/state`).catch(() => null),
+    getJSON(`${base}/timeline?from=${from}&to=${to}`).then(d => d.segments || []).catch(() => []),
   ]);
   const st = Object.fromEntries(STATUS_METRICS.map((m, i) => [m, statusResults[i]]));
   const segs = stateSegments(st.state_code, bucket * 1000);
-  const activeSpans = segs.filter(s => ACTIVE_CODES.has(s[2]));
-  const html = statusCard(st, segs, from, to) + METRICS.map((m, i) => {
+  // Shade the charts where the machine is busy: detected state if the machine
+  // has state rules, else the printer's own status.
+  const activeSpans = tl.length
+    ? tl.filter(s => BUSY.has(s.state)).map(s => [s.start_ts, s.end_ts ?? to])
+    : segs.filter(s => ACTIVE_CODES.has(s[2]));
+  const html = detectedCard(cur, tl, from, to) + statusCard(st, segs, from, to) + METRICS.map((m, i) => {
     const pts = results[i];
     if (!pts.length && m.optional) return "";
     if (!pts.length) return `<div class="card"><h2>${m.title}</h2><div class="empty">Ingen data i valgt tidsrom</div></div>`;

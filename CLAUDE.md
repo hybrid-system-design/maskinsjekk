@@ -21,6 +21,7 @@ cd server && go test -run='^$' -fuzz=FuzzParseSensorMessage -fuzztime=30s ./inte
 cd server && go test -run='^$' -fuzz=FuzzParseShellyStatus -fuzztime=30s ./internal/ingest
 cd server && go test -tags integration -count=1 ./internal/integration/...   # needs Docker
 cd deploy && docker compose up -d --build                           # MQTT_PORT/HTTP_PORT env override host ports
+cd server && go run ./cmd/replay --url http://<host>:8080 --machine printer-1 --machines ../deploy/config/machines.json --truth active
 cd tools/simulator && go run . --hours 6 --live
 arduino-cli compile --fqbn esp32:esp32:esp32doit-devkit-v1 firmware/sensor
 ```
@@ -36,7 +37,8 @@ Data flow in `server/cmd/maskinsjekk/main.go`: `config.Load` (env vars) + `confi
 - `ingest`: topic `hsd/<site>/<machine>/<sensor>`; JSON payload where **every numeric field becomes a metric** (new sensor types need no server change). Parsing (`parseSensorMessage`, `resolveEventTime`) is pure and fuzzed; bad messages are logged and dropped. Device `ts` is only trusted inside the sanity window, else arrival time is used. Shelly Gen2+ meters are the one native-format exception: sensors of kind `shelly-gen2` in `machines.json` map an `mqtt_prefix`/`channel` to a machine, and `parseShellyStatus` (`shelly.go`, also fuzzed) reads `<prefix>/status/switch:N|pm1:N`.
 - `store`: `InsertMeasurements` writes raw rows and maintains `measurements_1m` rollups in the same transaction; `Series` serves buckets ≥ 1 min from rollups, finer from raw. Machines file entries win over auto-registered placeholders.
 - The MQTT payload and HTTP shapes are the contract (see README.md); change them deliberately.
-- Planned (see ROADMAP.md): state machine → power as primary signal → jobs/kWh → dashboard → ntfy alerts. `state_events` and `jobs` tables already exist but are unpopulated.
+- `state`: per-machine rules from the `state` block in `machines.json` (signals → ordered rules → debounce). The core (`SignalValue`, `Classify`, `Tracker`, `Replay`) is pure and clock-free; `Runner` evaluates it live every `STATE_INTERVAL` against raw measurements and writes `state_events`. `cmd/replay` runs the same code over history fetched from the HTTP API; `testdata/` holds two real prints as a regression test against the shipped config.
+- Planned (see ROADMAP.md): jobs/kWh + UNPLANNED_STOP → dashboard → ntfy alerts. The `jobs` table exists but is unpopulated.
 
 ## Conventions
 

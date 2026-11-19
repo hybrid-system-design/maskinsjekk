@@ -15,19 +15,21 @@ Working end-to-end before polish. One line per item, ticked when done.
 - [x] Verified on real hardware (sensor mounted on the printer)
 
 ## Phase 2 — State machine from vibration
-- [ ] Per-machine thresholds + debounce times in machines.json
-- [ ] States: OFF, HEATING, RUNNING, IDLE, UNPLANNED_STOP → `state_events`
+- [x] Per-machine signals, rules and debounce times in machines.json
+- [x] States: OFF, IDLE, HEATING, RUNNING (+ UNKNOWN when data is missing) → `state_events`
 - [x] Bambu bridge (`tools/bambu-bridge`): printer status stored as sensor `bambu` → ground-truth labels for real data
-- [ ] Collect labelled data (several days of prints, idle and off)
-- [ ] Validate against the simulator's ground truth and the Bambu labels
+- [ ] Collect labelled data (several days of prints, idle and off): so far two prints with power + labels (2026-11-13)
+- [x] Replay tool (`server/cmd/replay`) + regression test on the real prints: 99.99% agreement with Bambu `active`
+- [ ] Validate against the simulator's ground truth (the simulator now publishes `power_w`)
 
 ## Phase 3 — Shelly: power as the primary signal
 - [x] Ingest Shelly Gen2 status (`apower`, `aenergy.total`) mapped to a machine
-- [ ] Power primary, vibration confirms
+- [x] Power primary, vibration confirms (built into the Phase 2 rules)
 - [ ] Jobs with start/end and kWh; UNPLANNED_STOP heuristic (duration + power profile)
 
 ## Phase 4 — API + dashboard
-- [ ] `/machines/{id}/state`, `/metrics`, `/timeline`, `/jobs`
+- [x] `/machines/{id}/state`, `/timeline` (+ detected state on the live page)
+- [ ] `/metrics`, `/jobs`
 - [ ] TypeScript dashboard (Norwegian, mobile-first): current state, daily timeline, key figures, kWh + cost per job
 
 ## Phase 5 — Alerts + validation

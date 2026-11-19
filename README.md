@@ -20,8 +20,10 @@ controls the machine. Design: [docs/SPEC.md](docs/SPEC.md). Progress:
 
 A working demo, not a finished product. Sensor ingest (ESP32 vibration and
 temperature, Shelly power), storage with rollups, the HTTP API and a live page
-with charts run end to end on real hardware. State detection, jobs/kWh, the
-full dashboard and alerts are in progress (see [ROADMAP.md](ROADMAP.md)).
+with charts run end to end on real hardware, and the service infers each
+machine's state (OFF / IDLE / HEATING / RUNNING) from configurable rules.
+Jobs/kWh, unplanned-stop detection, the full dashboard and alerts are in
+progress (see [ROADMAP.md](ROADMAP.md)).
 
 The MQTT broker accepts anonymous clients: run the stack on a trusted LAN only.
 Authentication and TLS come before any deployment on a production network.
@@ -106,13 +108,14 @@ server's arrival time is used. That accepts a simulator backfill and rejects
 
 `sites` → `machines` → `sensors`; `measurements` (raw, kept `RAW_RETENTION`,
 default 7 days); `measurements_1m` (per-minute avg/min/max/n rollups, kept
-forever, maintained on insert); `state_events` and `jobs` (populated from Phase
-2/3). Schema changes are append-only migrations tracked by `PRAGMA user_version`.
+forever, maintained on insert); `state_events` (one row per detected state
+interval, `end_ts` NULL for the current one) and `jobs` (populated from Phase 3). Schema changes are append-only migrations tracked by `PRAGMA user_version`.
 
 Unknown sites/machines/sensors are auto-registered on first message
 (`AUTO_REGISTER=true`); names and sensor kinds come from
 `deploy/config/machines.json`, which wins over auto-registered placeholders.
-Per-machine thresholds will live in that file too, never in code.
+Per-machine state rules live in that file too, never in code (see
+[State detection](#state-detection)).
 
 ### HTTP API
 
@@ -120,9 +123,68 @@ Per-machine thresholds will live in that file too, never in code.
 |----------|---------|
 | `GET /machines` | All machines with site, name, `last_seen`, `stale` (no data within `STALE_THRESHOLD`) and sensors |
 | `GET /machines/{id}/series?metric=&from=&to=&bucket=` | Downsampled series: `points[] {t, ts, avg, min, max, n}`. `from`/`to` are RFC3339 or unix ms (default last 24h); `bucket` in seconds (default 60). Buckets ≥ 1 min come from rollups; finer ones from raw data. Max 5000 points. |
+| `GET /machines/{id}/state` | Current detected state: `{machine_id, state, since, since_ts, reason}`; `state` is null for a machine without state rules |
+| `GET /machines/{id}/timeline?from=&to=` | Detected state intervals overlapping the range (default last 24h), clipped to it: `segments[] {state, start, start_ts, end, end_ts}`; `end`/`end_ts` are null for the ongoing state |
 | `GET /healthz` | `{"ok":true}` |
 
-Coming with later phases: `/machines/{id}/state`, `/metrics`, `/timeline`, `/jobs`.
+Coming with later phases: `/metrics`, `/jobs`.
+
+## State detection
+
+Each machine with a `state` block in `machines.json` is evaluated every
+`STATE_INTERVAL` (default 5s). Example (the demo printer):
+
+```json
+"state": {
+  "signals": {
+    "power": { "sensor": "shelly-1", "metric": "power_w", "window": "60s", "max_age": "10m" },
+    "vib":   { "sensor": "esp32-1", "metric": "vib_rms", "window": "60s", "max_age": "2m", "optional": true }
+  },
+  "rules": [
+    { "state": "OFF",     "when": { "power": { "below": 3 } },  "enter_after": "60s" },
+    { "state": "IDLE",    "when": { "power": { "below": 20 } }, "enter_after": "60s" },
+    { "state": "HEATING", "when": { "vib": { "below": 0.02 } }, "enter_after": "60s" },
+    { "state": "RUNNING", "enter_after": "60s" }
+  ]
+}
+```
+
+- A **signal** is a metric (optionally from one `sensor`), averaged over
+  `window`. With no sample in the window the latest one is used if it is at
+  most `max_age` old (default `window`); power meters only report on change, so
+  give them a generous `max_age`. Older than that, the signal is missing.
+- **Rules** are tried in order; the first whose conditions all hold
+  (`at_least` ≤ value < `below`) gives the candidate state. A rule without
+  `when` always holds, so put the default last. States: `OFF`, `IDLE`,
+  `HEATING`, `RUNNING`.
+- A missing **required** signal gives `UNKNOWN`. A missing `optional` one only
+  makes the rules that test it not match (above: no vibration data → a
+  powered machine counts as RUNNING, not HEATING).
+- **Debounce:** the candidate must hold for `enter_after` before the state
+  changes; the new state is then backdated to when the candidate first
+  appeared, so the timeline lines up with the data. `UNKNOWN` is entered at
+  once (`max_age` already delayed it).
+
+Power is the primary signal: it tells off, standby and working apart cleanly.
+Vibration only separates heating up from motion. On the demo printer vibration
+stays high for ~15 min after a print (fans) while power is back at standby, so
+a vibration-only rule would stretch every job.
+
+Tune rules offline with `cmd/replay`: it fetches history from a running
+service, runs a local machines file over it with the same code, and prints the
+timeline, time per state and (with `--truth`) agreement with a 0/1
+ground-truth metric such as the Bambu bridge's `active`:
+
+```bash
+cd server
+go run ./cmd/replay --url http://<host>:8080 --machine printer-1 \
+  --machines ../deploy/config/machines.json --from 2026-11-12T13:00:00Z --truth active
+```
+
+Use `--bucket 60` for history older than `RAW_RETENTION`. On five days of the
+demo printer (two prints) the shipped rules agree with `active` in 99.99% of
+10 s buckets; the two prints are also a regression test
+(`server/internal/state/testdata`).
 
 ## Configuration (server env vars)
 
@@ -138,6 +200,7 @@ Coming with later phases: `/machines/{id}/state`, `/metrics`, `/timeline`, `/job
 | `RAW_RETENTION` | `168h` | how long raw 1 Hz data is kept |
 | `STALE_THRESHOLD` | `30s` | silence after which a machine is reported stale |
 | `SANITY_PAST` / `SANITY_FUTURE` | `50h` / `5m` | device timestamp acceptance window |
+| `STATE_INTERVAL` | `5s` | how often machine states are evaluated |
 
 ## Sensor firmware (`firmware/sensor/`)
 
@@ -215,10 +278,13 @@ Models OFF → HEATING → RUNNING → IDLE → OFF with randomized durations an
 configurable share of jobs that stop unplanned (`--abort-rate`, default 0.25).
 Every true state transition is logged (`truth ...`) as ground truth for testing
 state detection. Same `--seed` = same schedule. Publishes as machine
-`sim-printer` by default so it never mixes with real data.
+`sim-printer` by default so it never mixes with real data: `vib_rms` and
+`temp_c` on sensor `esp32-1`, and `power_w` on sensor `power` (like a smart
+plug), which the `sim-printer` state rules use.
 
 Flags: `--hours` (backfill, default 6), `--step` (backfill interval, default 5s),
-`--live`, `--site`, `--machine`, `--sensor`, `--seed`, `--abort-rate`.
+`--live`, `--site`, `--machine`, `--sensor`, `--power-sensor` (empty = no
+power), `--seed`, `--abort-rate`.
 
 ## Bambu bridge (`tools/bambu-bridge/`)
 

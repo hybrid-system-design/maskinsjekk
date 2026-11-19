@@ -452,3 +452,102 @@ func nameOr(name, fallback string) string {
 	}
 	return name
 }
+
+// Sample is one raw value of a metric.
+type Sample struct {
+	TS    int64
+	Value float64
+}
+
+// RecentSamples returns the raw values of one metric on a machine with
+// ts > sinceMS, oldest first. An empty sensorID matches every sensor.
+func (s *Store) RecentSamples(ctx context.Context, machineID, sensorID, metric string, sinceMS int64) ([]Sample, error) {
+	q := `SELECT ts, value FROM measurements WHERE machine_id = ? AND metric = ? AND ts > ?`
+	args := []any{machineID, metric, sinceMS}
+	if sensorID != "" {
+		q += ` AND sensor_id = ?`
+		args = append(args, sensorID)
+	}
+	rows, err := s.db.QueryContext(ctx, q+` ORDER BY ts ASC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("recent samples: %w", err)
+	}
+	defer rows.Close()
+	var out []Sample
+	for rows.Next() {
+		var sm Sample
+		if err := rows.Scan(&sm.TS, &sm.Value); err != nil {
+			return nil, fmt.Errorf("recent samples scan: %w", err)
+		}
+		out = append(out, sm)
+	}
+	return out, rows.Err()
+}
+
+// StateEvent is one state interval; End is 0 while it is the current state.
+type StateEvent struct {
+	State  string
+	Start  int64
+	End    int64
+	Reason string
+}
+
+// CurrentState returns a machine's open state event; ok is false if it has
+// none yet.
+func (s *Store) CurrentState(ctx context.Context, machineID string) (ev StateEvent, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT state, start_ts, reason FROM state_events
+		 WHERE machine_id = ? AND end_ts IS NULL ORDER BY start_ts DESC, id DESC LIMIT 1`,
+		machineID).Scan(&ev.State, &ev.Start, &ev.Reason)
+	if err == sql.ErrNoRows {
+		return ev, false, nil
+	}
+	if err != nil {
+		return ev, false, fmt.Errorf("current state: %w", err)
+	}
+	return ev, true, nil
+}
+
+// RecordState closes the machine's open state event at startMS and opens a
+// new one, atomically.
+func (s *Store) RecordState(ctx context.Context, machineID, state string, startMS int64, reason string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("record state: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE state_events SET end_ts = MAX(start_ts, ?) WHERE machine_id = ? AND end_ts IS NULL`,
+		startMS, machineID); err != nil {
+		return fmt.Errorf("close state: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO state_events (machine_id, state, start_ts, reason) VALUES (?, ?, ?, ?)`,
+		machineID, state, startMS, reason); err != nil {
+		return fmt.Errorf("open state: %w", err)
+	}
+	return tx.Commit()
+}
+
+// StateEvents returns the state intervals of a machine overlapping
+// [fromMS, toMS), oldest first. Intervals are not clipped to the range.
+func (s *Store) StateEvents(ctx context.Context, machineID string, fromMS, toMS int64) ([]StateEvent, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT state, start_ts, COALESCE(end_ts, 0), reason FROM state_events
+		 WHERE machine_id = ? AND start_ts < ? AND (end_ts IS NULL OR end_ts > ?)
+		 ORDER BY start_ts ASC, id ASC`,
+		machineID, toMS, fromMS)
+	if err != nil {
+		return nil, fmt.Errorf("state events: %w", err)
+	}
+	defer rows.Close()
+	var out []StateEvent
+	for rows.Next() {
+		var ev StateEvent
+		if err := rows.Scan(&ev.State, &ev.Start, &ev.End, &ev.Reason); err != nil {
+			return nil, fmt.Errorf("state events scan: %w", err)
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}

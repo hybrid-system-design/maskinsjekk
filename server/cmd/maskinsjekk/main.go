@@ -1,5 +1,6 @@
 // Command maskinsjekk is the machine-monitoring service: it subscribes to MQTT,
-// normalizes sensor data into measurements in SQLite, and serves the HTTP API.
+// normalizes sensor data into measurements in SQLite, infers machine states,
+// and serves the HTTP API.
 package main
 
 import (
@@ -15,6 +16,7 @@ import (
 	"maskinsjekk/internal/api"
 	"maskinsjekk/internal/config"
 	"maskinsjekk/internal/ingest"
+	"maskinsjekk/internal/state"
 	"maskinsjekk/internal/store"
 )
 
@@ -63,6 +65,7 @@ func main() {
 	}
 
 	go pruneLoop(ctx, st, cfg.RawRetention, logger)
+	go state.NewRunner(st, machines.StateMachines(), cfg.StateInterval, logger).Run(ctx)
 
 	// Block until interrupted, then shut down gracefully.
 	<-ctx.Done()

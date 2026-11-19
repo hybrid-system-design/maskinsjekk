@@ -41,6 +41,8 @@ type Config struct {
 	// deviate from server wall-clock before we fall back to arrival time.
 	SanityPast   time.Duration
 	SanityFuture time.Duration
+	// StateInterval is how often the state machine evaluates each machine.
+	StateInterval time.Duration
 	// MQTT reconnect tuning: interval between initial connect attempts, and the
 	// cap on the auto-reconnect backoff after a dropped connection.
 	MQTTConnectRetryInterval time.Duration
@@ -61,6 +63,7 @@ func Load() Config {
 		StaleThreshold: getdur("STALE_THRESHOLD", 30*time.Second),
 		SanityPast:     getdur("SANITY_PAST", 50*time.Hour),
 		SanityFuture:   getdur("SANITY_FUTURE", 5*time.Minute),
+		StateInterval:  getdur("STATE_INTERVAL", 5*time.Second),
 
 		MQTTConnectRetryInterval: getdur("MQTT_CONNECT_RETRY_INTERVAL", 5*time.Second),
 		MQTTMaxReconnectInterval: getdur("MQTT_MAX_RECONNECT_INTERVAL", 30*time.Second),
@@ -79,12 +82,13 @@ type Site struct {
 	Machines []Machine `json:"machines"`
 }
 
-// Machine is one monitored machine. Per-machine thresholds for the state
-// machine will live here (Phase 2+).
+// Machine is one monitored machine. State, if set, enables state detection
+// with this machine's own signals and thresholds.
 type Machine struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Sensors []Sensor `json:"sensors"`
+	ID      string       `json:"id"`
+	Name    string       `json:"name"`
+	Sensors []Sensor     `json:"sensors"`
+	State   *StateConfig `json:"state,omitempty"`
 }
 
 // Sensor is one data source attached to a machine (ESP32 node, power plug, ...).
@@ -133,6 +137,19 @@ func (m Machines) ShellyDevices() []ShellyDevice {
 	return out
 }
 
+// StateMachines lists the machines that have state detection configured.
+func (m Machines) StateMachines() []Machine {
+	var out []Machine
+	for _, s := range m.Sites {
+		for _, mc := range s.Machines {
+			if mc.State != nil {
+				out = append(out, mc)
+			}
+		}
+	}
+	return out
+}
+
 // LoadMachines reads the machines file. A missing file yields an empty set (the
 // service then relies on auto-registration); a malformed one is an error.
 func LoadMachines(path string) (Machines, error) {
@@ -168,6 +185,11 @@ func (m Machines) validate() error {
 				return fmt.Errorf("duplicate machine id %q", mc.ID)
 			}
 			machines[mc.ID] = true
+			if mc.State != nil {
+				if err := mc.State.validate(); err != nil {
+					return fmt.Errorf("machine %q: %w", mc.ID, err)
+				}
+			}
 			for _, sn := range mc.Sensors {
 				if !ValidID(sn.ID) {
 					return fmt.Errorf("invalid sensor id %q on machine %q", sn.ID, mc.ID)
