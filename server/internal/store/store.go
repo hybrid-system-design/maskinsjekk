@@ -134,6 +134,23 @@ CREATE TABLE jobs (
 );
 CREATE INDEX idx_jobs_machine_start ON jobs(machine_id, start_ts);
 `,
+	// 2: state rule sets. Every distinct state config of a machine is a rule
+	// set; its detected events carry its id. When the config changes the old
+	// set is archived (kept, with its events) and history is recomputed under
+	// the new one. rule_set_id 0 marks events recorded before this migration.
+	`
+CREATE TABLE state_rule_sets (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  machine_id  TEXT    NOT NULL REFERENCES machines(id),
+  hash        TEXT    NOT NULL,
+  config      TEXT    NOT NULL, -- JSON; '' for events from before rule sets
+  created_at  INTEGER NOT NULL,
+  archived_at INTEGER           -- NULL for the machine's current rule set
+);
+CREATE INDEX idx_state_rule_sets_machine ON state_rule_sets(machine_id, archived_at);
+ALTER TABLE state_events ADD COLUMN rule_set_id INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX idx_state_events_rule_set ON state_events(machine_id, rule_set_id, start_ts);
+`,
 }
 
 // Open opens (creating if needed) the SQLite database at path, enables WAL mode,
@@ -480,74 +497,6 @@ func (s *Store) RecentSamples(ctx context.Context, machineID, sensorID, metric s
 			return nil, fmt.Errorf("recent samples scan: %w", err)
 		}
 		out = append(out, sm)
-	}
-	return out, rows.Err()
-}
-
-// StateEvent is one state interval; End is 0 while it is the current state.
-type StateEvent struct {
-	State  string
-	Start  int64
-	End    int64
-	Reason string
-}
-
-// CurrentState returns a machine's open state event; ok is false if it has
-// none yet.
-func (s *Store) CurrentState(ctx context.Context, machineID string) (ev StateEvent, ok bool, err error) {
-	err = s.db.QueryRowContext(ctx,
-		`SELECT state, start_ts, reason FROM state_events
-		 WHERE machine_id = ? AND end_ts IS NULL ORDER BY start_ts DESC, id DESC LIMIT 1`,
-		machineID).Scan(&ev.State, &ev.Start, &ev.Reason)
-	if err == sql.ErrNoRows {
-		return ev, false, nil
-	}
-	if err != nil {
-		return ev, false, fmt.Errorf("current state: %w", err)
-	}
-	return ev, true, nil
-}
-
-// RecordState closes the machine's open state event at startMS and opens a
-// new one, atomically.
-func (s *Store) RecordState(ctx context.Context, machineID, state string, startMS int64, reason string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("record state: %w", err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE state_events SET end_ts = MAX(start_ts, ?) WHERE machine_id = ? AND end_ts IS NULL`,
-		startMS, machineID); err != nil {
-		return fmt.Errorf("close state: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO state_events (machine_id, state, start_ts, reason) VALUES (?, ?, ?, ?)`,
-		machineID, state, startMS, reason); err != nil {
-		return fmt.Errorf("open state: %w", err)
-	}
-	return tx.Commit()
-}
-
-// StateEvents returns the state intervals of a machine overlapping
-// [fromMS, toMS), oldest first. Intervals are not clipped to the range.
-func (s *Store) StateEvents(ctx context.Context, machineID string, fromMS, toMS int64) ([]StateEvent, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT state, start_ts, COALESCE(end_ts, 0), reason FROM state_events
-		 WHERE machine_id = ? AND start_ts < ? AND (end_ts IS NULL OR end_ts > ?)
-		 ORDER BY start_ts ASC, id ASC`,
-		machineID, toMS, fromMS)
-	if err != nil {
-		return nil, fmt.Errorf("state events: %w", err)
-	}
-	defer rows.Close()
-	var out []StateEvent
-	for rows.Next() {
-		var ev StateEvent
-		if err := rows.Scan(&ev.State, &ev.Start, &ev.End, &ev.Reason); err != nil {
-			return nil, fmt.Errorf("state events scan: %w", err)
-		}
-		out = append(out, ev)
 	}
 	return out, rows.Err()
 }

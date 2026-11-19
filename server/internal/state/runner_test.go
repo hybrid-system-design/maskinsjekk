@@ -99,7 +99,7 @@ func TestRunner(t *testing.T) {
 		t.Fatalf("after data stopped: %+v", ev)
 	}
 
-	evs, err := st.StateEvents(ctx, "m1", t0.Add(-time.Hour).UnixMilli(), clock.UnixMilli())
+	evs, err := st.StateEvents(ctx, "m1", 0, t0.Add(-time.Hour).UnixMilli(), clock.UnixMilli())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestRunner(t *testing.T) {
 
 	// A range inside one event returns just that event.
 	mid := t0.Add(18 * time.Minute).UnixMilli()
-	evs, err = st.StateEvents(ctx, "m1", mid, mid+1)
+	evs, err = st.StateEvents(ctx, "m1", 0, mid, mid+1)
 	if err != nil || len(evs) != 1 || evs[0].State != config.StateRunning {
 		t.Fatalf("narrow range: %+v %v", evs, err)
 	}

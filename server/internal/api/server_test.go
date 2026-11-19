@@ -235,3 +235,74 @@ func TestStateAndTimeline(t *testing.T) {
 		}
 	}
 }
+
+func TestJobsAndRuleSets(t *testing.T) {
+	ts, st := newTestServer(t)
+	seed(t, st, "printer-1", now, 0.1)
+	ctx := context.Background()
+	m := func(n int) int64 { return now.Add(time.Duration(n) * time.Minute).UnixMilli() }
+	for _, ev := range []struct {
+		state string
+		start int64
+	}{{"IDLE", m(-120)}, {"HEATING", m(-100)}, {"RUNNING", m(-98)}, {"IDLE", m(-40)}, {"HEATING", m(-5)}} {
+		if err := st.RecordState(ctx, "printer-1", ev.state, ev.start, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var got struct {
+		Jobs []jobJSON `json:"jobs"`
+	}
+	if code := get(t, ts.URL+"/machines/printer-1/jobs", &got); code != 200 || len(got.Jobs) != 2 {
+		t.Fatalf("jobs: code=%d %+v", code, got)
+	}
+	cur, done := got.Jobs[0], got.Jobs[1] // newest first
+	if cur.EndTS != nil || cur.StartTS != m(-5) || cur.DurationS != 300 {
+		t.Errorf("ongoing job: %+v", cur)
+	}
+	if done.StartTS != m(-100) || *done.EndTS != m(-40) || done.DurationS != 3600 || done.EnergyWh != nil {
+		t.Errorf("finished job: %+v", done)
+	}
+	// A range that ends before the second job.
+	url := ts.URL + "/machines/printer-1/jobs?from=" + strconv.FormatInt(m(-110), 10) + "&to=" + strconv.FormatInt(m(-30), 10)
+	if get(t, url, &got); len(got.Jobs) != 1 {
+		t.Errorf("ranged jobs: %+v", got.Jobs)
+	}
+
+	var sets struct {
+		RuleSets []ruleSetJSON `json:"rule_sets"`
+	}
+	if code := get(t, ts.URL+"/machines/printer-1/rulesets", &sets); code != 200 || sets.RuleSets == nil || len(sets.RuleSets) != 0 {
+		t.Fatalf("rulesets: code=%d %+v", code, sets)
+	}
+	if _, _, err := st.ActivateRuleSet(ctx, "printer-1", "abc", `{"rules":[]}`, m(0)); err != nil {
+		t.Fatal(err)
+	}
+	get(t, ts.URL+"/machines/printer-1/rulesets", &sets)
+	if len(sets.RuleSets) != 2 || !sets.RuleSets[0].Current || sets.RuleSets[1].Archived == nil || string(sets.RuleSets[1].Config) != "null" {
+		t.Fatalf("rulesets after activation: %+v", sets.RuleSets)
+	}
+	// The archived (pre-rule-set) timeline stays readable.
+	var tl struct {
+		Segments []segment `json:"segments"`
+	}
+	get(t, ts.URL+"/machines/printer-1/timeline?rules="+strconv.FormatInt(sets.RuleSets[1].ID, 10), &tl)
+	if len(tl.Segments) != 5 {
+		t.Errorf("archived timeline: %+v", tl.Segments)
+	}
+	get(t, ts.URL+"/machines/printer-1/timeline", &tl)
+	if len(tl.Segments) != 0 {
+		t.Errorf("current timeline right after activation: %+v", tl.Segments)
+	}
+
+	for path, want := range map[string]int{
+		"/machines/nope/jobs":                    404,
+		"/machines/nope/rulesets":                404,
+		"/machines/printer-1/timeline?rules=x":   400,
+		"/machines/printer-1/jobs?from=tomorrow": 400,
+	} {
+		if code := get(t, ts.URL+path, nil); code != want {
+			t.Errorf("%s: code %d, want %d", path, code, want)
+		}
+	}
+}

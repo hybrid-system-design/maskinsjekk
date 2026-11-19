@@ -163,3 +163,49 @@ func TestFloorMod(t *testing.T) {
 		t.Fatal("floorMod wrong")
 	}
 }
+
+func TestSignalHistoryAndEnergy(t *testing.T) {
+	st := openTest(t)
+	ctx := context.Background()
+	const minute = int64(60_000)
+	base := int64(1_000_000_000) // not minute-aligned on purpose
+	var ms []Measurement
+	// 10 minutes, one sample every 10 s: counter rising 1 Wh per minute.
+	for ts := int64(0); ts < 10*minute; ts += 10_000 {
+		ms = append(ms, meas("m", "energy_wh", 100+float64(ts)/float64(minute), base+ts))
+	}
+	if err := st.InsertMeasurements(ctx, ms); err != nil {
+		t.Fatal(err)
+	}
+	wh, ok, err := st.EnergyWh(ctx, "m", base+2*minute, base+7*minute)
+	if err != nil || !ok || wh < 4.8 || wh > 5 {
+		t.Fatalf("energy from raw counter = %v %v %v, want ~5", wh, ok, err)
+	}
+	all, err := st.SignalHistory(ctx, "m", "", "energy_wh", base)
+	if err != nil || len(all) != 60 {
+		t.Fatalf("raw history: %d samples, err %v", len(all), err)
+	}
+
+	// Prune the first 5 minutes of raw data: history fills in from rollups.
+	if _, err := st.db.Exec(`DELETE FROM measurements WHERE ts < ?`, base+5*minute); err != nil {
+		t.Fatal(err)
+	}
+	h, err := st.SignalHistory(ctx, "m", "", "energy_wh", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h) != 5+30 || h[0].TS != base-base%minute+minute/2 || h[5].TS != base+5*minute {
+		t.Fatalf("mixed history: %d samples, first %+v, raw start %+v", len(h), h[0], h[5])
+	}
+	for i := 1; i < len(h); i++ {
+		if h[i].TS <= h[i-1].TS {
+			t.Fatalf("history not sorted at %d", i)
+		}
+	}
+	if wh, ok, _ := st.EnergyWh(ctx, "m", base, base+3*minute); !ok || wh <= 0 {
+		t.Fatalf("energy from counter rollups = %v %v", wh, ok)
+	}
+	if _, ok, _ := st.EnergyWh(ctx, "nope", base, base+minute); ok {
+		t.Fatal("energy for a machine without data")
+	}
+}

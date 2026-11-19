@@ -25,11 +25,15 @@ Working end-to-end before polish. One line per item, ticked when done.
 ## Phase 3 — Shelly: power as the primary signal
 - [x] Ingest Shelly Gen2 status (`apower`, `aenergy.total`) mapped to a machine
 - [x] Power primary (demo printer: power only; its vibration sensor mostly hears the air filter)
-- [ ] Jobs with start/end and kWh; UNPLANNED_STOP heuristic (duration + power profile)
+- [x] Jobs with start/end and kWh (derived from detected states; `/machines/{id}/jobs`)
+- [ ] UNPLANNED_STOP heuristic (duration + power profile)
+- [x] Rule changes archive the old timeline and recompute all history
 
 ## Phase 4 — API + dashboard
 - [x] `/machines/{id}/state`, `/timeline` (+ detected state on the live page)
-- [ ] `/metrics`, `/jobs`
+- [x] `/jobs`, `/rulesets`
+- [x] Live page: shared hover cursor, pin, drag-to-zoom, 7/30 days + date picker, jobs list, sensor health, card chooser
+- [ ] `/metrics`
 - [ ] TypeScript dashboard (Norwegian, mobile-first): current state, daily timeline, key figures, kWh + cost per job
 
 ## Phase 5 — Alerts + validation

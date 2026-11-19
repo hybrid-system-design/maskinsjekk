@@ -7,11 +7,11 @@
 <style>
   :root {
     --bg: #f5f6f8; --card: #fff; --text: #1b2430; --muted: #6b7686; --line: #e3e7ed;
-    --temp: #d9480f; --vib: #1c7ed6; --power: #7048e8; --ok: #2f9e44; --bad: #e03131; --active: #2f9e44;
+    --temp: #d9480f; --vib: #1c7ed6; --power: #7048e8; --ok: #2f9e44; --bad: #e03131; --warn: #e8590c; --active: #2f9e44;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #11151b; --card: #1a2029; --text: #e6eaf0; --muted: #8b96a6; --line: #2a323e;
-            --temp: #ff8a4c; --vib: #5aa9ff; --power: #9775fa; --ok: #51cf66; --bad: #ff6b6b; --active: #51cf66; }
+            --temp: #ff8a4c; --vib: #5aa9ff; --power: #9775fa; --ok: #51cf66; --bad: #ff6b6b; --warn: #ff922b; --active: #51cf66; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
@@ -19,23 +19,65 @@
   main { max-width: 900px; margin: 0 auto; }
   header { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 16px; }
   h1 { font-size: 20px; margin: 0 auto 0 0; }
-  select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line);
+  select, input, button { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line);
            background: var(--card); color: var(--text); }
+  button { cursor: pointer; }
   .status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
   .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: -6px 0 16px; font-size: 14px; }
+  .bar[hidden] { display: none; }
+  .chip { display: inline-flex; gap: 8px; align-items: center; padding: 4px 6px 4px 10px; border-radius: 999px;
+          background: var(--card); border: 1px solid var(--line); font-size: 13px; }
+  .chip button { padding: 0 6px; border: 0; background: none; color: var(--muted); }
+  #settings { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; }
+  #settings .row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  #settings .row label { flex: 1; display: flex; gap: 8px; align-items: center; }
+  #settings .row button { padding: 2px 8px; }
+  button:disabled { opacity: 0.35; cursor: default; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
           padding: 14px 16px; margin-bottom: 16px; }
   .card h2 { font-size: 14px; font-weight: 600; margin: 0 0 4px; color: var(--muted); }
   .value { font-size: 34px; font-weight: 600; }
   .value small { font-size: 15px; font-weight: 400; color: var(--muted); }
   .range { font-size: 13px; color: var(--muted); }
-  svg { width: 100%; height: 180px; display: block; margin-top: 8px; }
+  svg { width: 100%; height: 168px; display: block; margin-top: 8px; }
+  .axisrow { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 2px; }
   .empty { color: var(--muted); padding: 24px 0; text-align: center; }
   .axis { fill: var(--muted); font-size: 11px; }
-  svg.band { height: 44px; }
+  svg.band { height: 28px; }
+  .bandlabel { font-size: 12px; color: var(--muted); margin-top: 8px; }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--muted); margin-top: 6px; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .compare { margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .compare select { font-size: 13px; padding: 3px 6px; }
+  /* Health warnings */
+  .warn { display: flex; gap: 8px; padding: 4px 0; }
+  .warn::before { content: "⚠"; color: var(--warn); }
+  .okline { color: var(--ok); }
+  /* Jobs */
+  .jobs { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 6px; }
+  .jobs th { text-align: left; font-weight: 500; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  .jobs td { padding: 6px; border-bottom: 1px solid var(--line); }
+  .jobs td.num, .jobs th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .jobs tbody tr { cursor: pointer; }
+  .jobs tbody tr:hover { background: var(--bg); }
+  .jobswrap { max-height: 320px; overflow-y: auto; }
+  .running { color: var(--ok); font-weight: 500; }
+  /* Shared cursor: one time across every chart, values in one tooltip. */
+  #cards svg { touch-action: pan-y; cursor: crosshair; user-select: none; }
+  .cursor { stroke: var(--text); stroke-opacity: 0.45; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+  .cursor.pinned { stroke-opacity: 0.8; stroke-dasharray: 3 3; }
+  .cursor-dot { stroke-width: 8; stroke-linecap: round; vector-effect: non-scaling-stroke; pointer-events: none; }
+  .sel { fill: var(--vib); fill-opacity: 0.12; pointer-events: none; }
+  #tip { position: absolute; z-index: 10; pointer-events: none; display: none; min-width: 180px;
+         background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+         box-shadow: 0 4px 16px rgba(0,0,0,.15); padding: 8px 10px; font-size: 13px; }
+  #tip .t { font-weight: 600; margin-bottom: 4px; }
+  #tip .row { display: flex; justify-content: space-between; gap: 14px; }
+  #tip .row span:first-child { color: var(--muted); }
+  #tip .hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  #tip i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 </style>
 </head>
 <body>
@@ -44,41 +86,85 @@
     <h1>Maskinsjekk</h1>
     <select id="machine" aria-label="Maskin"></select>
     <select id="range" aria-label="Tidsrom">
-      <option value="900,5">Siste 15 min</option>
-      <option value="3600,10" selected>Siste time</option>
-      <option value="21600,60">Siste 6 timer</option>
-      <option value="86400,300">Siste 24 timer</option>
+      <option value="900">Siste 15 min</option>
+      <option value="3600" selected>Siste time</option>
+      <option value="21600">Siste 6 timer</option>
+      <option value="86400">Siste 24 timer</option>
+      <option value="604800">Siste 7 dager</option>
+      <option value="2592000">Siste 30 dager</option>
+      <option value="custom">Velg periode…</option>
     </select>
+    <button id="settingsBtn" aria-expanded="false" title="Velg hva som vises">Visning</button>
     <span class="status"><span class="dot" id="dot"></span><span id="statusText">Laster…</span></span>
   </header>
-  <div id="charts"></div>
+  <div class="bar" id="customBar" hidden>
+    Fra <input type="datetime-local" id="customFrom"> til <input type="datetime-local" id="customTo">
+    <button id="customApply">Vis</button>
+  </div>
+  <div class="bar" id="zoomBar" hidden>
+    <span class="chip"><span id="zoomText"></span><button id="zoomReset" title="Tilbake (dobbeltklikk i en graf)">✕</button></span>
+  </div>
+  <div id="settings" hidden></div>
+  <div id="cards"></div>
 </main>
+<div id="tip" role="tooltip"></div>
 <script>
-// optional: the card is left out (instead of "no data") for machines that have
-// no such sensor, e.g. power on a machine without a power meter.
+// --- configuration ---------------------------------------------------------
+
+// Metric charts. optional: left out (instead of "no data") for machines
+// without such a sensor. flat: if the readings vary less than this over
+// FLAT_MS, the sensor is stuck or loose (a mounted vibration sensor always
+// sees some noise: at rest the demo printer's varies by 0.005 g or more).
+// step: the source reports only on change (power meters), so a value holds
+// until the next one and is drawn as steps rather than slopes.
 const METRICS = [
-  { id: "power_w", title: "Effekt", unit: "W", color: "var(--power)", digits: 0, optional: true },
+  { id: "power_w", title: "Effekt", unit: "W", color: "var(--power)", digits: 0, optional: true, step: true },
   { id: "temp_c",  title: "Temperatur", unit: "°C", color: "var(--temp)", digits: 1 },
-  { id: "vib_rms", title: "Vibrasjon (RMS)", unit: "g", color: "var(--vib)", digits: 4 },
+  { id: "vib_rms", title: "Vibrasjon (RMS)", unit: "g", color: "var(--vib)", digits: 4, flat: 0.001 },
 ];
-// Machine state timeline: shown for any machine with a sensor publishing
-// state_code (today the Bambu bridge: the printer's own gcode_state).
+// The printer's own status (state_code from the Bambu bridge).
 const STATES = {
   0: ["Ledig", "#868e96"], 1: ["Forbereder", "#f08c00"], 2: ["Printer", "#2f9e44"],
   3: ["Pause", "#fab005"], 4: ["Ferdig", "#1c7ed6"], 5: ["Feilet", "#e03131"],
   6: ["Slicer", "#7048e8"], "-1": ["Ukjent", "#adb5bd"],
 };
 const ACTIVE_CODES = new Set([1, 2, 3, 6]);
-// Detected state (the server's state machine, /machines/{id}/timeline).
+// Detected state (the server's state machine).
 const DETECTED = {
   OFF: ["Av", "#495057"], IDLE: ["Ledig", "#868e96"], HEATING: ["Varmer opp", "#f08c00"],
   RUNNING: ["I drift", "#2f9e44"], UNKNOWN: ["Ukjent", "var(--line)"],
 };
 const BUSY = new Set(["HEATING", "RUNNING"]);
 const STATUS_METRICS = ["state_code", "printer_reachable", "percent", "layer", "total_layers", "nozzle_c", "bed_c", "energy_wh", "output"];
+
+// Cards the user can show/hide and reorder (saved in this browser).
+const CARDS = [
+  { id: "health", title: "Sensorhelse" },
+  { id: "state", title: "Tilstand (beregnet)" },
+  { id: "printer", title: "Maskinstatus (fra printeren)" },
+  { id: "jobs", title: "Jobber" },
+  ...METRICS.map(m => ({ id: m.id, title: m.title })),
+];
+const OFFLINE_MS = 5 * 60e3; // a sensor silent this long while others report is flagged
+const FLAT_MS = 10 * 60e3;   // a "flat" metric constant this long is flagged
+
 const $ = id => document.getElementById(id);
-const fmtTime = ms => new Date(ms).toLocaleTimeString("nb-NO", { hour: "2-digit", minute: "2-digit" });
 const fmtNum = (v, d) => v.toLocaleString("nb-NO", { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtClock = ms => new Date(ms).toLocaleTimeString("nb-NO", { hour: "2-digit", minute: "2-digit" });
+const WEEKDAYS = ["søn", "man", "tir", "ons", "tor", "fre", "lør"];
+const pad2 = n => String(n).padStart(2, "0");
+// fmtDay: "tor 19.11 14:51"
+function fmtDay(ms) {
+  const d = new Date(ms);
+  return `${WEEKDAYS[d.getDay()]} ${pad2(d.getDate())}.${pad2(d.getMonth() + 1)} ${fmtClock(ms)}`;
+}
+// fmtWhen picks the time format for a range: clock only within a day.
+const fmtWhen = (ms, span) => span > 24 * 3600e3 ? fmtDay(ms) : fmtClock(ms);
+function fmtDur(s) {
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? `${h} t ${m} min` : m ? `${m} min` : `${s} s`;
+}
+const fmtWh = wh => wh >= 1000 ? `${fmtNum(wh / 1000, 2)} kWh` : `${fmtNum(wh, 0)} Wh`;
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -86,8 +172,105 @@ async function getJSON(url) {
   return r.json();
 }
 
+// --- settings: which cards, in which order ---------------------------------
+
+function loadLayout() {
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem("maskinsjekk.cards")) || []; } catch (e) { /* ignore */ }
+  const known = new Set(CARDS.map(c => c.id));
+  const out = saved.filter(c => known.has(c.id));
+  for (const c of CARDS) if (!out.some(o => o.id === c.id)) out.push({ id: c.id, show: true });
+  return out;
+}
+let layout = loadLayout();
+function saveLayout() { localStorage.setItem("maskinsjekk.cards", JSON.stringify(layout)); }
+
+function renderSettings() {
+  $("settings").innerHTML = `<div class="range" style="margin-bottom:4px">Velg kort og rekkefølge (lagres i denne nettleseren)</div>` +
+    layout.map((c, i) => {
+      const title = CARDS.find(k => k.id === c.id).title;
+      return `<div class="row"><label><input type="checkbox" data-i="${i}" ${c.show ? "checked" : ""}> ${title}</label>` +
+        `<button data-up="${i}" ${i === 0 ? "disabled" : ""} aria-label="Flytt opp">▲</button>` +
+        `<button data-down="${i}" ${i === layout.length - 1 ? "disabled" : ""} aria-label="Flytt ned">▼</button></div>`;
+    }).join("");
+}
+$("settingsBtn").addEventListener("click", () => {
+  const s = $("settings");
+  s.hidden = !s.hidden;
+  $("settingsBtn").setAttribute("aria-expanded", String(!s.hidden));
+  if (!s.hidden) renderSettings();
+});
+$("settings").addEventListener("change", e => {
+  const i = e.target.dataset.i;
+  if (i === undefined) return;
+  layout[i].show = e.target.checked;
+  saveLayout(); render();
+});
+$("settings").addEventListener("click", e => {
+  const up = e.target.dataset.up, down = e.target.dataset.down;
+  const i = Number(up ?? down);
+  if (up === undefined && down === undefined) return;
+  const j = up !== undefined ? i - 1 : i + 1;
+  [layout[i], layout[j]] = [layout[j], layout[i]];
+  saveLayout(); renderSettings(); render();
+});
+
+// --- time range: preset, custom period, zoom --------------------------------
+
+let custom = null; // {from, to} from the date picker
+let zoom = null;   // {from, to} from dragging across a chart or picking a job
+
+function currentRange() {
+  if (zoom) return { ...zoom, live: false };
+  if (custom) return { ...custom, live: false };
+  const secs = Number($("range").value);
+  const to = Date.now();
+  return { from: to - secs * 1000, to, live: true };
+}
+// pickBucket keeps a series at no more than ~800 points.
+function pickBucket(spanMS) {
+  for (const b of [5, 10, 30, 60, 300, 900, 1800, 3600, 10800, 21600]) if (spanMS / 1000 / b <= 800) return b;
+  return 86400;
+}
+function setZoom(from, to) {
+  zoom = { from: Math.round(from), to: Math.round(to) };
+  clearHover(true);
+  refresh();
+}
+function resetZoom() { if (zoom) { zoom = null; clearHover(true); refresh(); } }
+$("zoomReset").addEventListener("click", resetZoom);
+
+const toLocalInput = ms => { const d = new Date(ms); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+$("range").addEventListener("change", () => {
+  const isCustom = $("range").value === "custom";
+  $("customBar").hidden = !isCustom;
+  zoom = null;
+  clearHover(true);
+  if (isCustom) {
+    const r = currentRange();
+    if (!$("customFrom").value) $("customFrom").value = toLocalInput(Date.now() - 24 * 3600e3);
+    if (!$("customTo").value) $("customTo").value = toLocalInput(r.to || Date.now());
+    return; // wait for "Vis"
+  }
+  custom = null;
+  refresh();
+});
+$("customApply").addEventListener("click", () => {
+  const from = new Date($("customFrom").value).getTime(), to = new Date($("customTo").value).getTime();
+  if (!(from < to)) { alert("Fra må være før til."); return; }
+  custom = { from, to };
+  zoom = null;
+  refresh();
+});
+
+// --- data loading -----------------------------------------------------------
+
+let machines = [];
+let data = null;    // everything the cards are drawn from
+let compareSet = 0; // archived rule set shown next to the current timeline
+
 async function loadMachines() {
-  const { machines } = await getJSON("/machines");
+  ({ machines } = await getJSON("/machines"));
   const sel = $("machine");
   const prev = sel.value;
   sel.innerHTML = "";
@@ -99,12 +282,61 @@ async function loadMachines() {
   }
   const live = machines.find(m => !m.stale) || machines[0];
   sel.value = machines.some(m => m.id === prev) ? prev : (live ? live.id : "");
-  return machines;
 }
 
-// All charts share the selected time range as x axis, so they line up.
-function xScale(t0, t1, W, L, R) {
-  return t => L + (t - t0) / (t1 - t0) * (W - L - R);
+let loading = 0;
+async function refresh() {
+  const id = $("machine").value;
+  if (!id) return;
+  const seq = ++loading;
+  const { from, to, live } = currentRange();
+  const bucket = pickBucket(to - from);
+  const base = `/machines/${encodeURIComponent(id)}`;
+  const series = (metric, f = from, t = to, b = bucket) =>
+    getJSON(`${base}/series?metric=${metric}&from=${f}&to=${t}&bucket=${b}`).then(d => d.points || []).catch(() => []);
+  const now = Date.now();
+  const [results, statusResults, cur, tl, ruleSets, jobs, flats] = await Promise.all([
+    Promise.all(METRICS.map(m => series(m.id))),
+    Promise.all(STATUS_METRICS.map(m => series(m))),
+    getJSON(`${base}/state`).catch(() => null),
+    getJSON(`${base}/timeline?from=${from}&to=${to}`).then(d => d.segments || []).catch(() => []),
+    getJSON(`${base}/rulesets`).then(d => d.rule_sets || []).catch(() => []),
+    getJSON(`${base}/jobs?from=${from}&to=${to}`).then(d => d.jobs || []).catch(() => []),
+    // Recent data for the flat-signal check, independent of the shown range.
+    Promise.all(METRICS.map(m => m.flat ? series(m.id, now - FLAT_MS, now, 60) : Promise.resolve(null))),
+  ]);
+  const archived = ruleSets.filter(r => !r.current);
+  if (compareSet && !archived.some(r => r.id === compareSet)) compareSet = 0;
+  const compareTl = compareSet
+    ? await getJSON(`${base}/timeline?from=${from}&to=${to}&rules=${compareSet}`).then(d => d.segments || []).catch(() => [])
+    : [];
+  if (seq !== loading) return; // a newer refresh started meanwhile
+  const st = Object.fromEntries(STATUS_METRICS.map((m, i) => [m, statusResults[i]]));
+  data = {
+    id, from, to, live, bucketMS: bucket * 1000, results, st, cur, tl, archived, compareTl, jobs, flats,
+    segs: stateSegments(st.state_code, bucket * 1000),
+    machine: machines.find(m => m.id === id),
+  };
+  render();
+}
+
+// --- drawing ----------------------------------------------------------------
+
+// All charts and bands share the time range as x axis, one viewBox width and
+// the same side margins, so a time maps to the same x everywhere.
+const VW = 800, VL = 8, VR = 8;
+const CHART = { H: 168, T: 8, B: 4 };
+const xScale = (t0, t1) => t => VL + (t - t0) / (t1 - t0) * (VW - VL - VR);
+
+// chartY returns the y scale of a chart: padded min..max of the points.
+function chartY(points) {
+  let lo = Math.min(...points.map(p => p.min)), hi = Math.max(...points.map(p => p.max));
+  if (hi - lo < 1e-9) { lo -= 0.5; hi += 0.5; }
+  const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+  const { H, T, B } = CHART;
+  const y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+  y.lo = lo; y.hi = hi;
+  return y;
 }
 
 // stateSegments turns state_code buckets into [from, to, code] spans. A bucket
@@ -118,72 +350,110 @@ function stateSegments(points, bucketMS) {
     const end = next && next.ts - p.ts <= maxGap ? next.ts : p.ts + bucketMS;
     const code = p.min === p.max ? p.min : null;
     const prev = segs[segs.length - 1];
-    if (prev && prev[2] === code && prev[1] === p.ts) prev[1] = end; // one block per run
+    if (prev && prev[2] === code && prev[1] === p.ts) prev[1] = end;
     else segs.push([p.ts, end, code]);
   });
   return segs;
 }
 
+// axisRow puts the range's start and end under a graph. It is HTML, not SVG
+// text, so it isn't squeezed when the stretched SVG is narrow (phones).
+function axisRow(t0, t1) {
+  return `<div class="axisrow"><span>${fmtWhen(t0, t1 - t0)}</span><span>${fmtWhen(t1, t1 - t0)}</span></div>`;
+}
+
 // bandSVG draws [from, to, fill] spans as a horizontal band.
 function bandSVG(segs, t0, t1) {
-  const W = 800, H = 44, L = 8, R = 8, T = 4, B = 20;
-  const x = xScale(t0, t1, W, L, R);
+  const H = 28, T = 4, B = 4, x = xScale(t0, t1);
   const rects = segs.map(([a, b, fill]) => {
-    const xa = Math.max(x(a), L), xb = Math.min(x(b), W - R);
+    const xa = Math.max(x(a), VL), xb = Math.min(x(b), VW - VR);
     if (xb <= xa) return "";
     return `<rect x="${xa.toFixed(1)}" y="${T}" width="${(xb - xa).toFixed(1)}" height="${H - T - B}" fill="${fill}"/>`;
   }).join("");
-  return `<svg class="band" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
-    `<rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="none" stroke="var(--line)"/>${rects}` +
-    `<text class="axis" x="${L}" y="${H - 4}">${fmtTime(t0)}</text>` +
-    `<text class="axis" x="${W - R}" y="${H - 4}" text-anchor="end">${fmtTime(t1)}</text></svg>`;
+  return `<svg class="band" viewBox="0 0 ${VW} ${H}" preserveAspectRatio="none">` +
+    `<rect x="${VL}" y="${T}" width="${VW - VL - VR}" height="${H - T - B}" fill="none" stroke="var(--line)"/>${rects}` +
+    `</svg>` + axisRow(t0, t1);
 }
 
-function chartSVG(points, color, digits, t0, t1, activeSpans) {
-  const W = 800, H = 180, L = 8, R = 8, T = 8, B = 20;
-  let lo = Math.min(...points.map(p => p.min)), hi = Math.max(...points.map(p => p.max));
-  if (hi - lo < 1e-9) { lo -= 0.5; hi += 0.5; }
-  const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
-  const x = xScale(t0, t1, W, L, R);
-  const y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
-  const avg = points.map((p, i) => (i ? "L" : "M") + x(p.ts).toFixed(1) + " " + y(p.avg).toFixed(1)).join("");
-  const top = points.map((p, i) => (i ? "L" : "M") + x(p.ts).toFixed(1) + " " + y(p.max).toFixed(1)).join("");
-  const bot = points.slice().reverse().map(p => "L" + x(p.ts).toFixed(1) + " " + y(p.min).toFixed(1)).join("");
-  const grid = [0, 0.5, 1].map(f => {
-    const v = lo + (hi - lo) * f, yy = y(v);
-    return `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--line)"/>` +
-           `<text class="axis" x="${L + 2}" y="${yy - 3}">${fmtNum(v, digits)}</text>`;
+function chartSVG(points, m, index, t0, t1, activeSpans) {
+  const { H, T, B } = CHART;
+  const y = chartY(points), x = xScale(t0, t1);
+  // path draws one value of the points; with steps it holds each value until
+  // the next point.
+  const path = (pts, val, first) => pts.map((p, i) => {
+    const px = x(p.ts).toFixed(1), py = y(val(p)).toFixed(1);
+    if (i === 0) return (first ? "M" : "L") + px + " " + py;
+    if (!m.step) return "L" + px + " " + py;
+    // Forward: hold the previous value up to this point, then jump. Backward
+    // (the lower edge of the band): jump to this value first, then go back.
+    return first ? "H" + px + "V" + py : "V" + py + "H" + px;
   }).join("");
-  const shade = (activeSpans || []).map(([a, b]) => {
-    const xa = Math.max(x(a), L), xb = Math.min(x(b), W - R);
+  const avg = path(points, p => p.avg, true);
+  const top = path(points, p => p.max, true);
+  const bot = path(points.slice().reverse(), p => p.min, false);
+  const grid = [0, 0.5, 1].map(f => {
+    const v = y.lo + (y.hi - y.lo) * f, yy = y(v);
+    return `<line x1="${VL}" x2="${VW - VR}" y1="${yy}" y2="${yy}" stroke="var(--line)"/>` +
+           `<text class="axis" x="${VL + 2}" y="${yy - 3}">${fmtNum(v, m.digits)}</text>`;
+  }).join("");
+  const shade = activeSpans.map(([a, b]) => {
+    const xa = Math.max(x(a), VL), xb = Math.min(x(b), VW - VR);
     return xb > xa ? `<rect x="${xa.toFixed(1)}" y="${T}" width="${(xb - xa).toFixed(1)}" height="${H - T - B}" fill="var(--active)" opacity="0.08"/>` : "";
   }).join("");
-  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${shade}${grid}` +
-    `<path d="${top}${bot}Z" fill="${color}" opacity="0.15"/>` +
-    `<path d="${avg}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/>` +
-    `<text class="axis" x="${L}" y="${H - 4}">${fmtTime(t0)}</text>` +
-    `<text class="axis" x="${W - R}" y="${H - 4}" text-anchor="end">${fmtTime(t1)}</text></svg>`;
+  return `<svg data-chart="${index}" viewBox="0 0 ${VW} ${H}" preserveAspectRatio="none">${shade}${grid}` +
+    `<path d="${top}${bot}Z" fill="${m.color}" opacity="0.15"/>` +
+    `<path d="${avg}" fill="none" stroke="${m.color}" stroke-width="2" vector-effect="non-scaling-stroke"/>` +
+    `</svg>` + axisRow(t0, t1);
 }
 
-// statusCard renders the current state and the state timeline, or "" when
-// the machine has no state_code data in the range.
-function statusCard(st, segs, from, to) {
-  const states = st.state_code;
+const detectedSegs = (tl, to) => tl.map(s => [s.start_ts, s.end_ts ?? to, (DETECTED[s.state] || DETECTED.UNKNOWN)[1]]);
+
+function ruleSetLabel(r) {
+  const until = r.archived ? fmtDay(Date.parse(r.archived)) : "";
+  return r.config === null ? `Før regelsett (til ${until})` : `Regler fra ${fmtDay(Date.parse(r.created))} til ${until}`;
+}
+
+// --- cards ------------------------------------------------------------------
+
+function stateCard(d) {
+  if (!d.cur || !d.cur.state) return "";
+  const [name] = DETECTED[d.cur.state] || DETECTED.UNKNOWN;
+  const seen = new Set([...d.tl, ...d.compareTl].map(s => s.state));
+  const legend = Object.keys(DETECTED).filter(k => seen.has(k))
+    .map(k => `<span><i style="background:${DETECTED[k][1]}"></i>${DETECTED[k][0]}</span>`).join("");
+  let html = `<div class="card"><h2>Tilstand (beregnet fra sensorene)</h2>` +
+    `<div class="value">${name} <small>${d.live ? "" : "nå, "}siden ${fmtWhen(d.cur.since_ts, Date.now() - d.cur.since_ts)}</small></div>` +
+    `<div class="range">${d.cur.reason || "&nbsp;"}</div>` + bandSVG(detectedSegs(d.tl, d.to), d.from, d.to);
+  if (compareSet) {
+    const r = d.archived.find(r => r.id === compareSet);
+    html += `<div class="bandlabel">Arkivert: ${r ? ruleSetLabel(r) : ""}</div>` + bandSVG(detectedSegs(d.compareTl, d.to), d.from, d.to);
+  }
+  html += `<div class="legend">${legend}</div>`;
+  if (d.archived.length) {
+    html += `<div class="compare">Sammenlign med tidligere regler: <select id="compareSel"><option value="0">–</option>` +
+      d.archived.map(r => `<option value="${r.id}" ${r.id === compareSet ? "selected" : ""}>${ruleSetLabel(r)}</option>`).join("") +
+      `</select></div>`;
+  }
+  return html + `</div>`;
+}
+
+// printerCard: the printer's own status and timeline, or "" without state_code data.
+function printerCard(d) {
+  const st = d.st, states = st.state_code;
   if (!states.length) return "";
-  const last = (metric, maxAgeMS = 30000) => {
-    const pts = st[metric];
-    const p = pts[pts.length - 1];
-    return p && to - p.ts <= maxAgeMS ? p : null;
+  // The latest value, if it is recent: a bucket starts up to one bucket
+  // before "to", so allow two buckets (at least 30 s).
+  const maxAgeMS = Math.max(30000, 2 * d.bucketMS);
+  const last = metric => {
+    const pts = st[metric], p = pts[pts.length - 1];
+    return p && d.to - p.ts <= maxAgeMS ? p : null;
   };
-  const reach = last("printer_reachable");
-  const cur = last("state_code");
+  const reach = last("printer_reachable"), cur = last("state_code");
   let title;
   const detail = [];
-  if (reach && reach.max === 0) {
-    title = "Utilgjengelig";
-  } else if (!cur) {
-    title = "Ingen status siden " + fmtTime(states[states.length - 1].ts);
-  } else {
+  if (reach && reach.max === 0) title = "Utilgjengelig";
+  else if (!cur) title = "Ingen status siden " + fmtWhen(states[states.length - 1].ts, d.to - d.from);
+  else {
     title = (STATES[cur.max] || STATES["-1"])[0];
     const pct = last("percent"), layer = last("layer"), total = last("total_layers");
     if (ACTIVE_CODES.has(cur.max) && pct) detail.push(`${Math.round(pct.max)} %`);
@@ -192,88 +462,289 @@ function statusCard(st, segs, from, to) {
   const temps = [["nozzle_c", "dyse"], ["bed_c", "seng"]]
     .map(([m, label]) => { const p = last(m); return p ? `${label} ${fmtNum(p.avg, 0)} °C` : ""; })
     .filter(Boolean).join(" · ");
-  const seen = [...new Set(segs.map(s => s[2]).filter(c => c !== null))].sort((a, b) => a - b);
-  const legend = seen.map(c => {
-    const [name, color] = STATES[c] || STATES["-1"];
-    return `<span><i style="background:${color}"></i>${name}</span>`;
-  }).join("");
+  const seen = [...new Set(d.segs.map(s => s[2]).filter(c => c !== null))].sort((a, b) => a - b);
+  const legend = seen.map(c => { const [n, col] = STATES[c] || STATES["-1"]; return `<span><i style="background:${col}"></i>${n}</span>`; }).join("");
+  const fills = d.segs.map(([a, b, c]) => [a, b, c === null ? "var(--line)" : (STATES[c] || STATES["-1"])[1]]);
   return `<div class="card"><h2>Maskinstatus (fra printeren)</h2>` +
     `<div class="value">${title}${detail.length ? ` <small>${detail.join(" · ")}</small>` : ""}</div>` +
-    `<div class="range">${temps || "&nbsp;"}</div>` +
-    bandSVG(segs.map(([a, b, c]) => [a, b, c === null ? "var(--line)" : (STATES[c] || STATES["-1"])[1]]), from, to) +
-    `<div class="legend">${legend}</div></div>`;
+    `<div class="range">${temps || "&nbsp;"}</div>` + bandSVG(fills, d.from, d.to) + `<div class="legend">${legend}</div></div>`;
 }
 
-// detectedCard renders the state machine's current state and timeline, or ""
-// for a machine without state rules.
-function detectedCard(cur, tl, from, to) {
-  if (!cur || !cur.state) return "";
-  const [name] = DETECTED[cur.state] || DETECTED.UNKNOWN;
-  const segs = tl.map(s => [s.start_ts, s.end_ts ?? to, (DETECTED[s.state] || DETECTED.UNKNOWN)[1]]);
-  const seen = [...new Set(tl.map(s => s.state))];
-  const legend = Object.keys(DETECTED).filter(k => seen.includes(k))
-    .map(k => `<span><i style="background:${DETECTED[k][1]}"></i>${DETECTED[k][0]}</span>`).join("");
-  return `<div class="card"><h2>Tilstand (beregnet fra sensorene)</h2>` +
-    `<div class="value">${name} <small>siden ${fmtTime(cur.since_ts)}</small></div>` +
-    `<div class="range">${cur.reason || "&nbsp;"}</div>` +
-    bandSVG(segs, from, to) + `<div class="legend">${legend}</div></div>`;
+function jobsCard(d) {
+  if (!d.cur || !d.cur.state) return ""; // no state rules, no jobs
+  const span = d.to - d.from;
+  if (!d.jobs.length) return `<div class="card"><h2>Jobber</h2><div class="empty">Ingen jobber i valgt periode</div></div>`;
+  const total = d.jobs.reduce((s, j) => s + (j.energy_wh || 0), 0);
+  const rows = d.jobs.map((j, i) => `<tr data-job="${i}" title="Zoom til jobben">` +
+    `<td>${fmtWhen(j.start_ts, Math.max(span, 25 * 3600e3))}</td>` +
+    `<td>${j.end_ts ? fmtClock(j.end_ts) : `<span class="running">pågår</span>`}</td>` +
+    `<td class="num">${fmtDur(j.duration_s)}</td>` +
+    `<td class="num">${j.energy_wh === null ? "–" : fmtWh(j.energy_wh)}</td></tr>`).join("");
+  return `<div class="card"><h2>Jobber</h2>` +
+    `<div class="range">${d.jobs.length} ${d.jobs.length === 1 ? "jobb" : "jobber"} · ${fmtWh(total)} totalt · klikk en jobb for å zoome</div>` +
+    `<div class="jobswrap"><table class="jobs"><thead><tr><th>Start</th><th>Slutt</th><th class="num">Varighet</th><th class="num">Energi</th></tr></thead>` +
+    `<tbody>${rows}</tbody></table></div></div>`;
 }
 
-// powerExtras adds energy used in the range (from the meter's lifetime Wh
-// counter) and warns when the meter's relay is off, since the machine then has
-// no power at all.
+const SENSOR_KIND = { "shelly-gen2": "effektmåler", "esp32-vibration": "vibrasjonssensor", "bambu-status": "printerstatus", simulator: "simulator" };
+
+function healthCard(d) {
+  const warns = [];
+  const m = d.machine, now = Date.now();
+  if (m) {
+    const alive = m.sensors.some(s => s.last_seen && now - Date.parse(s.last_seen) < OFFLINE_MS);
+    for (const s of m.sensors) {
+      const kind = SENSOR_KIND[s.kind] || s.kind || "sensor";
+      if (!s.last_seen) { if (alive) warns.push(`${s.id} (${kind}) har aldri sendt data`); continue; }
+      const age = now - Date.parse(s.last_seen);
+      if (age > OFFLINE_MS) warns.push(`${s.id} (${kind}): ingen data siden ${fmtDay(Date.parse(s.last_seen))}`);
+    }
+  }
+  METRICS.forEach((mt, i) => {
+    const pts = d.flats[i];
+    if (!pts || pts.length < (FLAT_MS / 60e3) * 0.8) return;
+    const lo = Math.min(...pts.map(p => p.min)), hi = Math.max(...pts.map(p => p.max));
+    if (hi - lo < mt.flat) {
+      warns.push(`${mt.title} har nesten ikke variert (${fmtNum(lo, mt.digits)}–${fmtNum(hi, mt.digits)} ${mt.unit}) de siste ${FLAT_MS / 60e3} min – sitter sensoren løst, eller er den feil?`);
+    }
+  });
+  if (d.cur && d.cur.state === "UNKNOWN") warns.push(`Tilstanden er ukjent: ${d.cur.reason}`);
+  return `<div class="card"><h2>Sensorhelse</h2>` +
+    (warns.length ? warns.map(w => `<div class="warn">${w}</div>`).join("") : `<div class="okline">Alle sensorer sender data</div>`) + `</div>`;
+}
+
+// powerExtras: energy used in the range and a warning when the relay is off.
 function powerExtras(st) {
-  const parts = [];
-  const e = st.energy_wh;
+  const parts = [], e = st.energy_wh;
   if (e.length) {
     const used = e[e.length - 1].max - e[0].min;
-    if (used >= 0) parts.push(used >= 1000 ? `${fmtNum(used / 1000, 2)} kWh i perioden` : `${fmtNum(used, 0)} Wh i perioden`);
+    if (used >= 0) parts.push(`${fmtWh(used)} i perioden`);
   }
   const o = st.output;
   if (o.length && o[o.length - 1].max === 0) parts.push(`<b style="color:var(--bad)">relé av</b>`);
   return parts.length ? " · " + parts.join(" · ") : "";
 }
 
-async function refresh() {
-  const id = $("machine").value;
-  if (!id) return;
-  const [secs, bucket] = $("range").value.split(",").map(Number);
-  const to = Date.now(), from = to - secs * 1000;
-  const series = metric =>
-    getJSON(`/machines/${encodeURIComponent(id)}/series?metric=${metric}&from=${from}&to=${to}&bucket=${bucket}`)
-      .then(d => d.points || []).catch(() => []);
-  const base = `/machines/${encodeURIComponent(id)}`;
-  const [results, statusResults, cur, tl] = await Promise.all([
-    Promise.all(METRICS.map(m => series(m.id))),
-    Promise.all(STATUS_METRICS.map(series)),
-    getJSON(`${base}/state`).catch(() => null),
-    getJSON(`${base}/timeline?from=${from}&to=${to}`).then(d => d.segments || []).catch(() => []),
-  ]);
-  const st = Object.fromEntries(STATUS_METRICS.map((m, i) => [m, statusResults[i]]));
-  const segs = stateSegments(st.state_code, bucket * 1000);
+function metricCard(d, i, activeSpans) {
+  const m = METRICS[i], pts = d.results[i];
+  if (!pts.length && m.optional) return "";
+  if (!pts.length) return `<div class="card"><h2>${m.title}</h2><div class="empty">Ingen data i valgt tidsrom</div></div>`;
+  const last = pts[pts.length - 1];
+  const lo = Math.min(...pts.map(p => p.min)), hi = Math.max(...pts.map(p => p.max));
+  const extra = m.id === "power_w" ? powerExtras(d.st) : "";
+  const label = d.live ? "" : ` <small>(${fmtWhen(last.ts, d.to - d.from)})</small>`;
+  return `<div class="card"><h2>${m.title}</h2>` +
+    `<div class="value">${fmtNum(last.avg, m.digits)} <small>${m.unit}</small>${label}</div>` +
+    `<div class="range">min ${fmtNum(lo, m.digits)} · maks ${fmtNum(hi, m.digits)} ${m.unit}${extra}</div>` +
+    chartSVG(pts, m, i, d.from, d.to, activeSpans) + `</div>`;
+}
+
+function render() {
+  const d = data;
+  if (!d) return;
   // Shade the charts where the machine is busy: detected state if the machine
   // has state rules, else the printer's own status.
-  const activeSpans = tl.length
-    ? tl.filter(s => BUSY.has(s.state)).map(s => [s.start_ts, s.end_ts ?? to])
-    : segs.filter(s => ACTIVE_CODES.has(s[2]));
-  const html = detectedCard(cur, tl, from, to) + statusCard(st, segs, from, to) + METRICS.map((m, i) => {
-    const pts = results[i];
-    if (!pts.length && m.optional) return "";
-    if (!pts.length) return `<div class="card"><h2>${m.title}</h2><div class="empty">Ingen data i valgt tidsrom</div></div>`;
-    const last = pts[pts.length - 1];
-    const lo = Math.min(...pts.map(p => p.min)), hi = Math.max(...pts.map(p => p.max));
-    const extra = m.id === "power_w" ? powerExtras(st) : "";
-    return `<div class="card"><h2>${m.title}</h2>` +
-      `<div class="value">${fmtNum(last.avg, m.digits)} <small>${m.unit}</small></div>` +
-      `<div class="range">min ${fmtNum(lo, m.digits)} · maks ${fmtNum(hi, m.digits)} ${m.unit}${extra}</div>` +
-      chartSVG(pts, m.color, m.digits, from, to, activeSpans) + `</div>`;
-  }).join("");
-  $("charts").innerHTML = html;
+  const activeSpans = d.tl.length
+    ? d.tl.filter(s => BUSY.has(s.state)).map(s => [s.start_ts, s.end_ts ?? d.to])
+    : d.segs.filter(s => ACTIVE_CODES.has(s[2]));
+  const draw = {
+    health: () => healthCard(d), state: () => stateCard(d), printer: () => printerCard(d), jobs: () => jobsCard(d),
+    ...Object.fromEntries(METRICS.map((m, i) => [m.id, () => metricCard(d, i, activeSpans)])),
+  };
+  $("cards").innerHTML = layout.filter(c => c.show).map(c => draw[c.id]()).join("");
+  $("zoomBar").hidden = !zoom;
+  if (zoom) {
+    const sameDay = new Date(zoom.from).toDateString() === new Date(zoom.to).toDateString();
+    $("zoomText").textContent = `Zoom: ${fmtDay(zoom.from)} – ${sameDay ? fmtClock(zoom.to) : fmtDay(zoom.to)}`;
+  }
+  const sel = $("compareSel");
+  if (sel) sel.addEventListener("change", () => { compareSet = Number(sel.value); refresh(); });
+  drawHover();
 }
+
+$("cards").addEventListener("click", e => {
+  const row = e.target.closest("tr[data-job]");
+  if (!row || !data) return;
+  const j = data.jobs[row.dataset.job];
+  const end = j.end_ts || Date.now(), pad = Math.max((end - j.start_ts) * 0.08, 60e3);
+  setZoom(j.start_ts - pad, end + pad);
+});
+
+// --- shared cursor: hover, pin, drag to zoom ---------------------------------
+// Hovering (or touching) any chart or band picks one moment in time: every
+// chart gets a cursor line and a dot at its value, and one tooltip lists all
+// values at that moment. A click pins it (click again or Esc to release);
+// dragging across a chart zooms all charts to that span; a double click goes
+// back.
+
+let hoverT = null;  // the hovered moment (unix ms), null when not hovering
+let pinned = false;
+let tipXY = null;   // tooltip anchor in page coordinates
+let drag = null;    // {t, x} while the mouse is pressed on a chart
+
+// at returns the bucket covering t (the last one starting at or before t),
+// or null if the nearest data is too far back (a gap). Power meters report
+// only on change, so allow at least 90 s.
+function at(pts, t) {
+  let lo = 0, hi = pts.length - 1, k = -1;
+  while (lo <= hi) {
+    const m = (lo + hi) >> 1;
+    if (pts[m].ts <= t) { k = m; lo = m + 1; } else hi = m - 1;
+  }
+  if (k < 0 || t - pts[k].ts > Math.max(3 * data.bucketMS, 90000)) return null;
+  return pts[k];
+}
+
+function svgLine(svg, cls) {
+  let el = svg.querySelector("." + cls.split(" ")[0]);
+  if (!el) {
+    el = document.createElementNS("http://www.w3.org/2000/svg", cls === "sel" ? "rect" : "line");
+    svg.appendChild(el);
+  }
+  el.setAttribute("class", cls);
+  return el;
+}
+
+function clearHover(force) {
+  if (pinned && !force) return;
+  pinned = false;
+  hoverT = null;
+  $("tip").style.display = "none";
+  document.querySelectorAll("#cards .cursor, #cards .cursor-dot").forEach(e => e.remove());
+}
+
+function stateAt(tl, t, to) {
+  const s = tl.find(s => s.start_ts <= t && t < (s.end_ts ?? to));
+  const [name, color] = s ? (DETECTED[s.state] || DETECTED.UNKNOWN) : ["–", "transparent"];
+  return `<i style="background:${color}"></i>${name}`;
+}
+
+function drawHover() {
+  const d = data;
+  if (hoverT === null || !d) return;
+  if (hoverT < d.from || hoverT > d.to) { clearHover(true); return; }
+  const t = hoverT, x = xScale(d.from, d.to)(t);
+  const span = d.to - d.from;
+  const when = span <= 6 * 3600e3
+    ? new Date(t).toLocaleTimeString("nb-NO", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : fmtDay(t);
+  const rows = [];
+  if (d.tl.length) rows.push(["Tilstand", stateAt(d.tl, t, d.to)]);
+  if (compareSet) rows.push(["Arkivert", stateAt(d.compareTl, t, d.to)]);
+  if (d.segs.length) {
+    const s = d.segs.find(s => s[0] <= t && t < s[1]);
+    const code = s ? s[2] : undefined, known = code !== undefined && code !== null;
+    const name = code === undefined ? "–" : code === null ? "skifter" : (STATES[code] || STATES["-1"])[0];
+    rows.push(["Printer", `<i style="background:${known ? (STATES[code] || STATES["-1"])[1] : "transparent"}"></i>${name}`]);
+  }
+  const job = d.jobs.find(j => j.start_ts <= t && t < (j.end_ts || Date.now()));
+  if (job) rows.push(["Jobb", `startet ${fmtClock(job.start_ts)}`]);
+
+  document.querySelectorAll("#cards svg").forEach(svg => {
+    const line = svgLine(svg, pinned ? "cursor pinned" : "cursor");
+    line.setAttribute("x1", x); line.setAttribute("x2", x);
+    line.setAttribute("y1", 0); line.setAttribute("y2", svg.viewBox.baseVal.height);
+    const i = svg.dataset.chart;
+    if (i === undefined) return;
+    const pts = d.results[i], p = at(pts, t), dot = svgLine(svg, "cursor-dot");
+    dot.style.display = p ? "" : "none";
+    if (!p) return;
+    const yy = chartY(pts)(p.avg);
+    dot.setAttribute("x1", x); dot.setAttribute("x2", x);
+    dot.setAttribute("y1", yy); dot.setAttribute("y2", yy);
+    dot.setAttribute("stroke", METRICS[i].color);
+  });
+  METRICS.forEach((m, i) => {
+    if (!d.results[i].length) return;
+    const p = at(d.results[i], t);
+    rows.push([m.title, p ? `${fmtNum(p.avg, m.digits)} ${m.unit}` : "–"]);
+  });
+  for (const [metric, label, unit] of [["nozzle_c", "Dyse", "°C"], ["bed_c", "Seng", "°C"], ["percent", "Fremdrift", "%"]]) {
+    const pts = d.st[metric], p = pts && pts.length ? at(pts, t) : null;
+    if (p) rows.push([label, `${fmtNum(p.avg, 0)} ${unit}`]);
+  }
+
+  const tip = $("tip");
+  tip.innerHTML = `<div class="t">${when}${pinned ? " 📌" : ""}</div>` +
+    rows.map(([k, v]) => `<div class="row"><span>${k}</span><span>${v}</span></div>`).join("") +
+    `<div class="hint">${pinned ? "Klikk eller Esc for å slippe" : "Klikk for å feste · dra for å zoome"}</div>`;
+  tip.style.display = "block";
+  if (tipXY) {
+    const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+    const vx = tipXY[0] - window.scrollX, vy = tipXY[1] - window.scrollY; // viewport position
+    let left = vx + pad, top = vy + pad;
+    if (left + w > window.innerWidth - 4) left = vx - pad - w;
+    if (top + h > window.innerHeight - 4) top = vy - pad - h;
+    tip.style.left = Math.max(4, left) + window.scrollX + "px";
+    tip.style.top = Math.max(4, top) + window.scrollY + "px";
+  }
+}
+
+// timeAt maps a pointer event on a chart/band to a time in the shown range.
+function timeAt(e, svg) {
+  const r = svg.getBoundingClientRect();
+  const vx = (e.clientX - r.left) / r.width * VW;
+  const f = Math.min(1, Math.max(0, (vx - VL) / (VW - VL - VR)));
+  return data.from + f * (data.to - data.from);
+}
+
+function drawSelection(t0, t1) {
+  const x = xScale(data.from, data.to), a = x(Math.min(t0, t1)), b = x(Math.max(t0, t1));
+  document.querySelectorAll("#cards svg").forEach(svg => {
+    const r = svgLine(svg, "sel");
+    r.setAttribute("x", a); r.setAttribute("width", Math.max(0, b - a));
+    r.setAttribute("y", 0); r.setAttribute("height", svg.viewBox.baseVal.height);
+  });
+}
+const clearSelection = () => document.querySelectorAll("#cards .sel").forEach(e => e.remove());
+
+const cards = $("cards");
+cards.addEventListener("pointerdown", e => {
+  const svg = e.target.closest("#cards svg");
+  if (!svg || !data || e.button !== 0) return;
+  drag = { t: timeAt(e, svg), x: e.clientX, svg, touch: e.pointerType === "touch" };
+  if (!drag.touch) svg.setPointerCapture(e.pointerId);
+});
+cards.addEventListener("pointermove", e => {
+  if (!data) return;
+  if (drag && !drag.touch && Math.abs(e.clientX - drag.x) > 5) {
+    drawSelection(drag.t, timeAt(e, drag.svg));
+    return;
+  }
+  if (pinned) return;
+  const svg = e.target.closest("#cards svg");
+  if (!svg) { clearHover(); return; }
+  hoverT = timeAt(e, svg);
+  tipXY = [e.pageX, e.pageY];
+  drawHover();
+});
+cards.addEventListener("pointerup", e => {
+  if (!drag) return;
+  const d = drag;
+  drag = null;
+  clearSelection();
+  if (!d.touch && Math.abs(e.clientX - d.x) > 5) {
+    const t1 = timeAt(e, d.svg);
+    if (Math.abs(t1 - d.t) > 10e3) setZoom(Math.min(d.t, t1), Math.max(d.t, t1));
+    return;
+  }
+  // A click (or tap) pins the cursor here, or releases it.
+  if (pinned) { clearHover(true); return; }
+  hoverT = timeAt(e, d.svg);
+  tipXY = [e.pageX, e.pageY];
+  pinned = true;
+  drawHover();
+});
+cards.addEventListener("pointercancel", () => { drag = null; clearSelection(); });
+cards.addEventListener("pointerleave", () => { if (!drag) clearHover(); });
+cards.addEventListener("dblclick", e => { if (e.target.closest("#cards svg")) resetZoom(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") { clearHover(true); } });
+
+// --- main loop ---------------------------------------------------------------
 
 async function tick() {
   try {
-    const machines = await loadMachines();
+    await loadMachines();
     const m = machines.find(x => x.id === $("machine").value);
     const dot = $("dot");
     if (m && !m.stale) {
@@ -283,15 +754,15 @@ async function tick() {
       dot.className = "dot bad";
       $("statusText").textContent = m && m.last_seen ? "Ingen data siden " + new Date(m.last_seen).toLocaleTimeString("nb-NO") : "Ingen data";
     }
-    await refresh();
+    // A fixed period (zoom, chosen dates) doesn't change; only live ranges reload.
+    if (!data || data.id !== $("machine").value || currentRange().live) await refresh();
   } catch (e) {
     $("dot").className = "dot bad";
     $("statusText").textContent = "Får ikke kontakt med tjenesten";
   }
 }
 
-$("machine").addEventListener("change", refresh);
-$("range").addEventListener("change", refresh);
+$("machine").addEventListener("change", () => { zoom = null; compareSet = 0; clearHover(true); refresh(); });
 tick();
 setInterval(tick, 5000);
 </script>

@@ -1,6 +1,7 @@
 // Package api serves the HTTP JSON endpoints: the machine registry,
-// raw/downsampled metric series, and detected machine states. Metrics and jobs
-// endpoints arrive with jobs (Phase 3) and the dashboard (Phase 4).
+// raw/downsampled metric series, detected machine states (current, timeline,
+// archived rule sets) and jobs. A metrics endpoint arrives with the dashboard
+// (Phase 4).
 // Responses include permissive CORS so a browser dashboard can read them.
 package api
 
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"maskinsjekk/internal/config"
+	"maskinsjekk/internal/state"
 	"maskinsjekk/internal/store"
 )
 
@@ -45,6 +47,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /machines/{id}/series", s.handleSeries)
 	mux.HandleFunc("GET /machines/{id}/state", s.handleState)
 	mux.HandleFunc("GET /machines/{id}/timeline", s.handleTimeline)
+	mux.HandleFunc("GET /machines/{id}/rulesets", s.handleRuleSets)
+	mux.HandleFunc("GET /machines/{id}/jobs", s.handleJobs)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /{$}", handleIndex)
 	return cors(mux)
@@ -212,31 +216,50 @@ type segment struct {
 	EndTS   *int64  `json:"end_ts"` // null while ongoing
 }
 
-// handleTimeline: GET /machines/{id}/timeline?from=&to= — state intervals
-// overlapping the range (default: last 24h), clipped to it. The ongoing state
-// has end null.
-func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
-	machineID := r.PathValue("id")
+// parseRange reads from/to (RFC3339 or unix ms; default the last 24h) and
+// writes a 400 and returns false if they are invalid.
+func (s *Server) parseRange(w http.ResponseWriter, r *http.Request) (fromMS, toMS int64, ok bool) {
 	q := r.URL.Query()
-	nowMS := s.now().UnixMilli()
-	toMS, ok := parseTime(q.Get("to"), nowMS)
+	toMS, ok = parseTime(q.Get("to"), s.now().UnixMilli())
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "to must be RFC3339 or unix ms")
-		return
+		return 0, 0, false
 	}
-	fromMS, ok := parseTime(q.Get("from"), toMS-24*time.Hour.Milliseconds())
+	fromMS, ok = parseTime(q.Get("from"), toMS-24*time.Hour.Milliseconds())
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "from must be RFC3339 or unix ms")
-		return
+		return 0, 0, false
 	}
 	if fromMS >= toMS {
 		writeErr(w, http.StatusBadRequest, "from must be before to")
+		return 0, 0, false
+	}
+	return fromMS, toMS, true
+}
+
+// handleTimeline: GET /machines/{id}/timeline?from=&to=&rules= — state
+// intervals overlapping the range (default: last 24h), clipped to it. The
+// ongoing state has end null. rules picks an archived rule set (see
+// /rulesets); default is the current one.
+func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
+	machineID := r.PathValue("id")
+	fromMS, toMS, ok := s.parseRange(w, r)
+	if !ok {
 		return
+	}
+	var ruleSet int64
+	if v := r.URL.Query().Get("rules"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			writeErr(w, http.StatusBadRequest, "rules must be a rule set id")
+			return
+		}
+		ruleSet = n
 	}
 	if !s.machineKnown(w, r, machineID) {
 		return
 	}
-	evs, err := s.store.StateEvents(r.Context(), machineID, fromMS, toMS)
+	evs, err := s.store.StateEvents(r.Context(), machineID, ruleSet, fromMS, toMS)
 	if err != nil {
 		s.log.Printf("api: timeline %s: %v", machineID, err)
 		writeErr(w, http.StatusInternalServerError, "internal error")
@@ -257,6 +280,108 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		"from":       rfc3339(fromMS),
 		"to":         rfc3339(toMS),
 		"segments":   segs,
+	})
+}
+
+type ruleSetJSON struct {
+	ID       int64           `json:"id"`
+	Current  bool            `json:"current"`
+	Created  string          `json:"created"`
+	Archived *string         `json:"archived"` // null for the current rule set
+	Config   json.RawMessage `json:"config"`   // null for events from before rule sets
+}
+
+// handleRuleSets: GET /machines/{id}/rulesets — the state rule sets the
+// machine has run with, newest first. When the rules change, the timeline
+// detected under the old ones is archived and stays readable via
+// /timeline?rules=<id>.
+func (s *Server) handleRuleSets(w http.ResponseWriter, r *http.Request) {
+	machineID := r.PathValue("id")
+	if !s.machineKnown(w, r, machineID) {
+		return
+	}
+	sets, err := s.store.RuleSets(r.Context(), machineID)
+	if err != nil {
+		s.log.Printf("api: rulesets %s: %v", machineID, err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	out := make([]ruleSetJSON, 0, len(sets))
+	for _, rs := range sets {
+		j := ruleSetJSON{ID: rs.ID, Current: rs.ArchivedAt == 0, Created: rfc3339(rs.CreatedAt),
+			Archived: msToRFC3339(rs.ArchivedAt), Config: json.RawMessage("null")}
+		if rs.Config != "" {
+			j.Config = json.RawMessage(rs.Config)
+		}
+		out = append(out, j)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"machine_id": machineID, "rule_sets": out})
+}
+
+type jobJSON struct {
+	Start     string   `json:"start"`
+	StartTS   int64    `json:"start_ts"`
+	End       *string  `json:"end"`    // null while running
+	EndTS     *int64   `json:"end_ts"` // null while running
+	DurationS int64    `json:"duration_s"`
+	EnergyWh  *float64 `json:"energy_wh"` // null without power data
+}
+
+// jobLookback: a job overlapping the range may have started this long before
+// it; its real start is still reported.
+const jobLookback = 24 * time.Hour
+
+// handleJobs: GET /machines/{id}/jobs?from=&to= — jobs (stretches of
+// HEATING/RUNNING under the current rules) overlapping the range, newest
+// first, with duration and energy.
+func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
+	machineID := r.PathValue("id")
+	fromMS, toMS, ok := s.parseRange(w, r)
+	if !ok {
+		return
+	}
+	if !s.machineKnown(w, r, machineID) {
+		return
+	}
+	evs, err := s.store.StateEvents(r.Context(), machineID, 0, fromMS-jobLookback.Milliseconds(), toMS)
+	if err != nil {
+		s.log.Printf("api: jobs %s: %v", machineID, err)
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	nowMS := s.now().UnixMilli()
+	jobs := state.Jobs(evs)
+	out := make([]jobJSON, 0, len(jobs))
+	for i := len(jobs) - 1; i >= 0; i-- {
+		j := jobs[i]
+		end := j.End
+		if end == 0 {
+			end = nowMS
+		}
+		if end <= fromMS || j.Start >= toMS {
+			continue
+		}
+		jj := jobJSON{Start: rfc3339(j.Start), StartTS: j.Start, DurationS: (end - j.Start) / 1000}
+		if j.End != 0 {
+			e := j.End
+			jj.End, jj.EndTS = msToRFC3339(e), &e
+		}
+		wh, ok, err := s.store.EnergyWh(r.Context(), machineID, j.Start, end)
+		if err != nil {
+			s.log.Printf("api: jobs %s: %v", machineID, err)
+			writeErr(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if ok {
+			jj.EnergyWh = &wh
+		}
+		out = append(out, jj)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"machine_id": machineID,
+		"from":       rfc3339(fromMS),
+		"to":         rfc3339(toMS),
+		"jobs":       out,
 	})
 }
 

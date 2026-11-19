@@ -38,7 +38,9 @@ Data flow in `server/cmd/maskinsjekk/main.go`: `config.Load` (env vars) + `confi
 - `store`: `InsertMeasurements` writes raw rows and maintains `measurements_1m` rollups in the same transaction; `Series` serves buckets ≥ 1 min from rollups, finer from raw. Machines file entries win over auto-registered placeholders.
 - The MQTT payload and HTTP shapes are the contract (see README.md); change them deliberately.
 - `state`: per-machine rules from the `state` block in `machines.json` (signals → ordered rules → debounce). The core (`SignalValue`, `Classify`, `Tracker`, `Replay`) is pure and clock-free; `Runner` evaluates it live every `STATE_INTERVAL` against raw measurements and writes `state_events`. `cmd/replay` runs the same code over history fetched from the HTTP API; `testdata/` holds real prints (with Bambu ground truth) as regression tests against the shipped config. On the demo printer `vib_rms` mostly measures the air filtration unit, not printing, so its rules are power-only.
-- Planned (see ROADMAP.md): jobs/kWh + UNPLANNED_STOP → dashboard → ntfy alerts. The `jobs` table exists but is unpopulated.
+- Rule sets: `state.Sync` runs at startup before the Runner; if a machine's `state` config hash changed it archives the old `state_events` (kept under their `state_rule_sets` id) and replays the whole stored history (`store.SignalHistory`: rollups, then raw). Jobs are derived on read from state events (`state.Jobs`), never stored, so recomputes stay consistent.
+- The live page is one embedded file, `internal/api/web/index.html` (vanilla JS, no build step); the server must be rebuilt/restarted to serve changes.
+- Planned (see ROADMAP.md): UNPLANNED_STOP → metrics/dashboard → ntfy alerts. The `jobs` table exists but is unused.
 
 ## Conventions
 

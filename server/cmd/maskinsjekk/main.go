@@ -65,6 +65,11 @@ func main() {
 	}
 
 	go pruneLoop(ctx, st, cfg.RawRetention, logger)
+	// Archive and recompute detected states if the rules changed, then
+	// evaluate live.
+	if err := state.Sync(ctx, st, machines.StateMachines(), time.Now(), logger.Printf); err != nil {
+		logger.Fatalf("state: %v", err)
+	}
 	go state.NewRunner(st, machines.StateMachines(), cfg.StateInterval, logger).Run(ctx)
 
 	// Block until interrupted, then shut down gracefully.

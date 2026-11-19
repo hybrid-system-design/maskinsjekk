@@ -109,7 +109,9 @@ server's arrival time is used. That accepts a simulator backfill and rejects
 `sites` → `machines` → `sensors`; `measurements` (raw, kept `RAW_RETENTION`,
 default 7 days); `measurements_1m` (per-minute avg/min/max/n rollups, kept
 forever, maintained on insert); `state_events` (one row per detected state
-interval, `end_ts` NULL for the current one) and `jobs` (populated from Phase 3). Schema changes are append-only migrations tracked by `PRAGMA user_version`.
+interval, `end_ts` NULL for the current one, tagged with the `state_rule_sets`
+row of the rules that detected it). The `jobs` table is still unused: jobs are
+derived from state events on read (see below). Schema changes are append-only migrations tracked by `PRAGMA user_version`.
 
 Unknown sites/machines/sensors are auto-registered on first message
 (`AUTO_REGISTER=true`); names and sensor kinds come from
@@ -124,10 +126,12 @@ Per-machine state rules live in that file too, never in code (see
 | `GET /machines` | All machines with site, name, `last_seen`, `stale` (no data within `STALE_THRESHOLD`) and sensors |
 | `GET /machines/{id}/series?metric=&from=&to=&bucket=` | Downsampled series: `points[] {t, ts, avg, min, max, n}`. `from`/`to` are RFC3339 or unix ms (default last 24h); `bucket` in seconds (default 60). Buckets ≥ 1 min come from rollups; finer ones from raw data. Max 5000 points. |
 | `GET /machines/{id}/state` | Current detected state: `{machine_id, state, since, since_ts, reason}`; `state` is null for a machine without state rules |
-| `GET /machines/{id}/timeline?from=&to=` | Detected state intervals overlapping the range (default last 24h), clipped to it: `segments[] {state, start, start_ts, end, end_ts}`; `end`/`end_ts` are null for the ongoing state |
+| `GET /machines/{id}/timeline?from=&to=&rules=` | Detected state intervals overlapping the range (default last 24h), clipped to it: `segments[] {state, start, start_ts, end, end_ts}`; `end`/`end_ts` are null for the ongoing state. `rules` = an archived rule set id (default: current rules) |
+| `GET /machines/{id}/rulesets` | The state rule sets the machine has run with, newest first: `rule_sets[] {id, current, created, archived, config}`; `config` is null for events from before rule sets were tracked |
+| `GET /machines/{id}/jobs?from=&to=` | Jobs overlapping the range, newest first: `jobs[] {start, start_ts, end, end_ts, duration_s, energy_wh}`; `end`/`end_ts` null while running, `energy_wh` null without power data |
 | `GET /healthz` | `{"ok":true}` |
 
-Coming with later phases: `/metrics`, `/jobs`.
+Coming with later phases: `/metrics`.
 
 ## State detection
 
@@ -190,6 +194,35 @@ kept as regression tests in `server/internal/state/testdata` (two on
 2026-11-13 with the air filter on, one on 2026-11-19 with it off): the shipped
 rules agree with the printer's `active` flag in over 99% of 10 s buckets and
 label all actual printing RUNNING.
+
+**Rule changes recompute history.** Each distinct `state` block is a rule set.
+When the service starts with changed rules it archives the timeline detected
+under the old ones (still readable via `/rulesets` and `?rules=`, and on the
+live page under "Sammenlign med tidligere regler") and replays the machine's
+whole stored history under the new rules: raw data where it still exists,
+per-minute rollups before that. So the timeline and jobs always show what the
+current rules detect, and a threshold fix also fixes the past.
+
+**Jobs** are stretches of HEATING/RUNNING; a data gap (UNKNOWN) inside one
+does not split it, OFF or IDLE ends it. They are derived from the state
+events on read, so a recompute updates them too. Energy per job is the change
+of the machine's `energy_wh` counter (power meters report a lifetime total),
+or else `power_w` integrated over the per-minute rollups. Whether a job ended
+as planned (UNPLANNED_STOP) is not detected yet.
+
+## Live page
+
+`GET /` serves a live view (Norwegian, works on a phone): sensor health
+(sensors gone silent, or a vibration sensor that has stopped varying), the
+detected state with its timeline (optionally next to an archived rule set's),
+the printer's own status, the jobs in the period, and a chart per signal.
+
+- Hover or touch any graph: one cursor across all graphs and one tooltip with
+  every value at that moment. Click/tap to pin it, click again or Esc to release.
+- Drag across a graph to zoom all of them; double-click or ✕ to go back. Click
+  a job to zoom to it.
+- Ranges from 15 min to 30 days, or "Velg periode…" for any from/to.
+- "Visning": show/hide and reorder the cards (saved in the browser).
 
 ## Configuration (server env vars)
 
