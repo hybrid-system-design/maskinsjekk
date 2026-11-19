@@ -137,13 +137,12 @@ Each machine with a `state` block in `machines.json` is evaluated every
 ```json
 "state": {
   "signals": {
-    "power": { "sensor": "shelly-1", "metric": "power_w", "window": "60s", "max_age": "10m" },
-    "vib":   { "sensor": "esp32-1", "metric": "vib_rms", "window": "60s", "max_age": "2m", "optional": true }
+    "power": { "sensor": "shelly-1", "metric": "power_w", "window": "60s", "max_age": "10m" }
   },
   "rules": [
-    { "state": "OFF",     "when": { "power": { "below": 3 } },  "enter_after": "60s" },
-    { "state": "IDLE",    "when": { "power": { "below": 20 } }, "enter_after": "60s" },
-    { "state": "HEATING", "when": { "vib": { "below": 0.02 } }, "enter_after": "60s" },
+    { "state": "OFF",     "when": { "power": { "below": 3 } },      "enter_after": "60s" },
+    { "state": "IDLE",    "when": { "power": { "below": 20 } },     "enter_after": "60s" },
+    { "state": "HEATING", "when": { "power": { "at_least": 200 } }, "enter_after": "20s" },
     { "state": "RUNNING", "enter_after": "60s" }
   ]
 }
@@ -158,17 +157,22 @@ Each machine with a `state` block in `machines.json` is evaluated every
   `when` always holds, so put the default last. States: `OFF`, `IDLE`,
   `HEATING`, `RUNNING`.
 - A missing **required** signal gives `UNKNOWN`. A missing `optional` one only
-  makes the rules that test it not match (above: no vibration data → a
-  powered machine counts as RUNNING, not HEATING).
+  makes the rules that test it not match (e.g. an optional vibration signal on
+  a HEATING rule: without vibration data a powered machine counts as RUNNING).
+  The `sim-printer` entry shows a rule set with vibration.
 - **Debounce:** the candidate must hold for `enter_after` before the state
   changes; the new state is then backdated to when the candidate first
   appeared, so the timeline lines up with the data. `UNKNOWN` is entered at
   once (`max_age` already delayed it).
 
 Power is the primary signal: it tells off, standby and working apart cleanly.
-Vibration only separates heating up from motion. On the demo printer vibration
-stays high for ~15 min after a print (fans) while power is back at standby, so
-a vibration-only rule would stretch every job.
+On the demo printer it also marks heating up: the heaters draw 200 W to over
+1 kW for the first minute or two of a job, printing stays around 140–180 W.
+The printer's rules use no vibration, because there the ESP32 mostly measures
+the air filtration unit standing next to it: with the filter on, vibration is
+high during and ~15 min after a print; with it off (2026-11-19), a whole print
+stayed at resting level. Check what a vibration sensor actually picks up
+before writing rules on it.
 
 Tune rules offline with `cmd/replay`: it fetches history from a running
 service, runs a local machines file over it with the same code, and prints the
@@ -181,10 +185,11 @@ go run ./cmd/replay --url http://<host>:8080 --machine printer-1 \
   --machines ../deploy/config/machines.json --from 2026-11-12T13:00:00Z --truth active
 ```
 
-Use `--bucket 60` for history older than `RAW_RETENTION`. On five days of the
-demo printer (two prints) the shipped rules agree with `active` in 99.99% of
-10 s buckets; the two prints are also a regression test
-(`server/internal/state/testdata`).
+Use `--bucket 60` for history older than `RAW_RETENTION`. Real prints are
+kept as regression tests in `server/internal/state/testdata` (two on
+2026-11-13 with the air filter on, one on 2026-11-19 with it off): the shipped
+rules agree with the printer's `active` flag in over 99% of 10 s buckets and
+label all actual printing RUNNING.
 
 ## Configuration (server env vars)
 

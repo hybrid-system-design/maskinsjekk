@@ -176,62 +176,84 @@ func machineState(t *testing.T, id string) *config.StateConfig {
 	return nil
 }
 
-// TestReplayRealPrints runs the shipped printer-1 rules over two real prints
-// and checks them against the printer's own status (Bambu "active": a job in
-// progress, which our HEATING + RUNNING should cover).
+// TestReplayRealPrints runs the shipped printer-1 rules over real prints and
+// checks them against the printer's own status from the Bambu bridge: every
+// job is one HEATING/RUNNING stretch, "active" (a job in progress) agrees with
+// HEATING + RUNNING, and actual printing (stage 0) is RUNNING.
+//
+// The 2026-11-19 print ran with the air filtration unit off. On this printer
+// vibration mostly measures that unit's fan, so it stayed at its resting level
+// all through the print; rules that rely on vibration fail on that fixture.
 func TestReplayRealPrints(t *testing.T) {
 	cfg := machineState(t, "printer-1")
-	data := loadFixture(t, "testdata/printer-2026-11-13.csv")
-	series := map[string][]Sample{}
-	for name, sig := range cfg.Signals {
-		series[name] = data[sig.Metric]
-	}
-	from := data["power_w"][0].TS
-	to := data["power_w"][len(data["power_w"])-1].TS
-	const step = 10_000
-	trs := Replay(cfg, series, from, to, step)
-	for _, tr := range trs {
-		t.Logf("%s %-8s %s", time.UnixMilli(tr.Start).UTC().Format("15:04:05"), tr.State, tr.Reason)
-	}
-
-	// Two jobs: each must show up as exactly one HEATING/RUNNING stretch.
-	jobs := 0
 	busy := func(s string) bool { return s == config.StateHeating || s == config.StateRunning }
-	prev := ""
-	for _, tr := range trs {
-		if busy(tr.State) && !busy(prev) {
-			jobs++
-		}
-		prev = tr.State
-	}
-	if jobs != 2 {
-		t.Errorf("detected %d jobs, want 2", jobs)
-	}
-
-	// Minute-level agreement with the printer's own "job in progress" flag.
-	stateAt := func(ts int64) string {
-		s := ""
-		for _, tr := range trs {
-			if tr.Start > ts {
-				break
+	for _, fx := range []struct {
+		file string
+		jobs int
+	}{
+		{"testdata/printer-2026-11-13.csv", 2},
+		{"testdata/printer-2026-11-19.csv", 1},
+	} {
+		t.Run(fx.file, func(t *testing.T) {
+			data := loadFixture(t, fx.file)
+			series := map[string][]Sample{}
+			for name, sig := range cfg.Signals {
+				series[name] = data[sig.Metric]
 			}
-			s = tr.State
-		}
-		return s
-	}
-	agree, total := 0, 0
-	for _, a := range data["active"] {
-		if a.Value != 0 && a.Value != 1 {
-			continue // bucket holding a transition
-		}
-		total++
-		if busy(stateAt(a.TS)) == (a.Value == 1) {
-			agree++
-		}
-	}
-	pct := 100 * float64(agree) / float64(total)
-	t.Logf("agreement with Bambu active: %d/%d = %.1f%%", agree, total, pct)
-	if pct < 97 {
-		t.Errorf("agreement %.1f%% < 97%%", pct)
+			from := data["power_w"][0].TS
+			to := data["power_w"][len(data["power_w"])-1].TS
+			trs := Replay(cfg, series, from, to, 10_000)
+			for _, tr := range trs {
+				t.Logf("%s %-8s %s", time.UnixMilli(tr.Start).UTC().Format("15:04:05"), tr.State, tr.Reason)
+			}
+
+			jobs, prev := 0, ""
+			for _, tr := range trs {
+				if busy(tr.State) && !busy(prev) {
+					jobs++
+				}
+				prev = tr.State
+			}
+			if jobs != fx.jobs {
+				t.Errorf("detected %d jobs, want %d", jobs, fx.jobs)
+			}
+
+			stateAt := func(ts int64) string {
+				s := ""
+				for _, tr := range trs {
+					if tr.Start > ts {
+						break
+					}
+					s = tr.State
+				}
+				return s
+			}
+			// pct is the share of samples m (0/1 values only; others are buckets
+			// holding a transition) where want(value) agrees with the state.
+			pct := func(m string, use func(v float64) bool, ok func(state string, v float64) bool) float64 {
+				hit, n := 0, 0
+				for _, a := range data[m] {
+					if !use(a.Value) {
+						continue
+					}
+					n++
+					if ok(stateAt(a.TS), a.Value) {
+						hit++
+					}
+				}
+				return 100 * float64(hit) / float64(n)
+			}
+			active := pct("active", func(v float64) bool { return v == 0 || v == 1 },
+				func(s string, v float64) bool { return busy(s) == (v == 1) })
+			printing := pct("stage", func(v float64) bool { return v == 0 },
+				func(s string, _ float64) bool { return s == config.StateRunning })
+			t.Logf("agreement with Bambu active: %.1f%%; printing detected as RUNNING: %.1f%%", active, printing)
+			if active < 97 {
+				t.Errorf("agreement with active %.1f%% < 97%%", active)
+			}
+			if printing < 97 {
+				t.Errorf("printing detected as RUNNING %.1f%% < 97%%", printing)
+			}
+		})
 	}
 }

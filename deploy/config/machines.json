@@ -14,13 +14,12 @@
           ],
           "state": {
             "signals": {
-              "power": { "sensor": "shelly-1", "metric": "power_w", "window": "60s", "max_age": "10m" },
-              "vib": { "sensor": "esp32-1", "metric": "vib_rms", "window": "60s", "max_age": "2m", "optional": true }
+              "power": { "sensor": "shelly-1", "metric": "power_w", "window": "60s", "max_age": "10m" }
             },
             "rules": [
               { "state": "OFF", "when": { "power": { "below": 3 } }, "enter_after": "60s" },
               { "state": "IDLE", "when": { "power": { "below": 20 } }, "enter_after": "60s" },
-              { "state": "HEATING", "when": { "vib": { "below": 0.02 } }, "enter_after": "60s" },
+              { "state": "HEATING", "when": { "power": { "at_least": 200 } }, "enter_after": "20s" },
               { "state": "RUNNING", "enter_after": "60s" }
             ]
           }

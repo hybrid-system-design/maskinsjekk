@@ -14,17 +14,17 @@ Working end-to-end before polish. One line per item, ticked when done.
 - [x] Tests (unit, fuzz, integration) + CI + Docker Compose
 - [x] Verified on real hardware (sensor mounted on the printer)
 
-## Phase 2 — State machine from vibration
+## Phase 2 — State machine
 - [x] Per-machine signals, rules and debounce times in machines.json
 - [x] States: OFF, IDLE, HEATING, RUNNING (+ UNKNOWN when data is missing) → `state_events`
 - [x] Bambu bridge (`tools/bambu-bridge`): printer status stored as sensor `bambu` → ground-truth labels for real data
-- [ ] Collect labelled data (several days of prints, idle and off): so far two prints with power + labels (2026-11-13)
-- [x] Replay tool (`server/cmd/replay`) + regression test on the real prints: 99.99% agreement with Bambu `active`
+- [ ] Collect labelled data (several days of prints, idle and off): so far three prints with power + labels (2026-11-13, 2026-11-19)
+- [x] Replay tool (`server/cmd/replay`) + regression test on the real prints: >99% agreement with Bambu `active`, printing = RUNNING
 - [ ] Validate against the simulator's ground truth (the simulator now publishes `power_w`)
 
 ## Phase 3 — Shelly: power as the primary signal
 - [x] Ingest Shelly Gen2 status (`apower`, `aenergy.total`) mapped to a machine
-- [x] Power primary, vibration confirms (built into the Phase 2 rules)
+- [x] Power primary (demo printer: power only; its vibration sensor mostly hears the air filter)
 - [ ] Jobs with start/end and kWh; UNPLANNED_STOP heuristic (duration + power profile)
 
 ## Phase 4 — API + dashboard
