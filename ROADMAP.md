@@ -1,6 +1,6 @@
 # Roadmap
 
-Timeframe ~2 weeks. Working end-to-end before polish. One line per item, tick when done.
+Working end-to-end before polish. One line per item, ticked when done.
 
 ## Phase 1 — Firmware + MQTT + storing measurements
 - [x] Generic data model: sites/machines/sensors, measurements (+1-min rollups), state_events, jobs

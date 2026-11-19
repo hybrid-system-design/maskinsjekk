@@ -13,8 +13,18 @@ Shelly Plus Plug S ──────┘                          └─> ntfy a
 ```
 
 Everything runs locally in Docker Compose. Read-only by design: the system never
-controls the machine. Full brief: [docs/SPEC.md](docs/SPEC.md). Progress:
+controls the machine. Design: [docs/SPEC.md](docs/SPEC.md). Progress:
 [ROADMAP.md](ROADMAP.md).
+
+## Status
+
+A working demo, not a finished product. Sensor ingest (ESP32 vibration and
+temperature, Shelly power), storage with rollups, the HTTP API and a live page
+with charts run end to end on real hardware. State detection, jobs/kWh, the
+full dashboard and alerts are in progress (see [ROADMAP.md](ROADMAP.md)).
+
+The MQTT broker accepts anonymous clients: run the stack on a trusted LAN only.
+Authentication and TLS come before any deployment on a production network.
 
 ## Repository layout
 
@@ -157,15 +167,15 @@ GND → GND, X → GPIO36, Y → GPIO39, Z → GPIO34.
   console (115200 baud):
 
   ```
-  set ssid MyWifi
-  set pass secret
+  set ssid <wifi-ssid>
+  set pass <wifi-password>
   set mqtt_host fedora.local   # or a plain IP, e.g. 192.168.1.50
   set site demo
   set machine printer-1
   set sensor esp32-1
   set temp max6675        # none | max6675 | mpu6050
   set accel adxl335       # auto (I2C, default) | adxl335 (analog GY-61)
-  set ota_pass secret     # enables network uploads (masked in `show`)
+  set ota_pass <ota-password>  # enables network uploads (masked in `show`)
   reboot
   ```
 
@@ -182,7 +192,7 @@ network port its mDNS discovery has seen, so first check that
 `network`) and use the IP it lists:
 
 ```bash
-arduino-cli upload --fqbn esp32:esp32:esp32doit-devkit-v1 --port 192.168.68.50 --protocol network --upload-field password=secret --discovery-timeout 10s firmware/sensor
+arduino-cli upload --fqbn esp32:esp32:esp32doit-devkit-v1 --port <node-ip> --protocol network --upload-field password=<ota-password> --discovery-timeout 10s firmware/sensor
 ```
 
 If discovery doesn't see the node (`port not found: <ip> network`), push the
@@ -191,7 +201,7 @@ Windows, `espota.py` elsewhere, in the esp32 core's `tools/` directory;
 compile with `--output-dir <dir>` first, outside the repo):
 
 ```bash
-espota.exe -r -i 192.168.68.50 -p 3232 --auth=secret -f <dir>/sensor.ino.bin
+espota.exe -r -i <node-ip> -p 3232 --auth=<ota-password> -f <dir>/sensor.ino.bin
 ```
 
 The sketch must keep fitting the default partition scheme's OTA app slot
@@ -258,3 +268,9 @@ round trip, native Shelly status mapping, honoring device timestamps on backfill
 `AUTO_REGISTER=false`, and reconnecting after a network drop. CI runs everything
 above plus the Bambu bridge tests (`cd tools/bambu-bridge && go test ./...`),
 a Docker smoke test and the firmware compile.
+
+## Licence
+
+Copyright © 2026 Hybrid Systemdesign AS. All rights reserved. The source is
+published so it can be read; using, copying or distributing it needs written
+permission. See [LICENSE](LICENSE).

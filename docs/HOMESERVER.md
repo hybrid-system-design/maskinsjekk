@@ -33,22 +33,17 @@ Laptop specifics:
 
 ## 2. Start the stack (pull-based deploys)
 
-The repo is private, so the server reads it with a **read-only deploy key**:
+The server only ever reads the repo, so a plain HTTPS clone is enough (no
+credentials on the server):
 
 ```bash
-ssh-keygen -t ed25519 -N "" -C "maskinsjekk-deploy@$(hostname)" -f ~/.ssh/maskinsjekk_deploy
-cat >> ~/.ssh/config <<'CFG'
-Host github-maskinsjekk
-  HostName github.com
-  User git
-  IdentityFile ~/.ssh/maskinsjekk_deploy
-  IdentitiesOnly yes
-CFG
-# From a machine with gh logged in (adds it read-only):
-#   gh repo deploy-key add maskinsjekk_deploy.pub --title "<server> (read-only)"
-git clone git@github-maskinsjekk:hybrid-system-design/maskinsjekk.git ~/maskinsjekk
+git clone https://github.com/hybrid-system-design/maskinsjekk.git ~/maskinsjekk
 ~/maskinsjekk/deploy/deploy.sh --force
 ```
+
+For a private fork, clone over SSH with a read-only
+[deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
+instead.
 
 Deploying afterwards: push to `main`, then
 

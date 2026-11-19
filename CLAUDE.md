@@ -8,9 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Maskinsjekk machine-monitoring demo (HSD). Read-only machine monitoring: ESP32 vibration/temperature + Shelly power → Mosquitto → Go service → SQLite → REST API → dashboard. Foundation for a product offer to manufacturing companies, so **everything must stay generic** (no printer-specific logic; thresholds in `deploy/config/machines.json`, not code). The brief is in `docs/SPEC.md`; progress in `ROADMAP.md`; contracts in `README.md`.
+Maskinsjekk machine-monitoring demo (HSD). Read-only machine monitoring: ESP32 vibration/temperature + Shelly power → Mosquitto → Go service → SQLite → REST API → dashboard. A 3D printer stands in for any production machine, so **everything must stay generic** (no printer-specific logic; thresholds in `deploy/config/machines.json`, not code). The design is in `docs/SPEC.md`; progress in `ROADMAP.md`; contracts in `README.md`.
 
-Structure and conventions were carried over from the user's temperature-monitor project (`../connected_systems`): same Go layout (`internal/config|store|ingest|api|integration`), pure-Go SQLite, log-and-drop ingestion with pure, fuzzed parsers, testcontainers integration tests.
+Go layout: `internal/config|store|ingest|api|integration`, pure-Go SQLite, log-and-drop ingestion with pure, fuzzed parsers, testcontainers integration tests.
 
 ## Commands
 
@@ -29,14 +29,14 @@ CI (`.github/workflows/ci.yml`) also enforces `gofmt -l server tools` (must be e
 
 ## Architecture
 
-`server` and `tools/simulator` are **separate Go modules** (`maskinsjekk`, `maskinsjekk-simulator`); there is no go.work, so run go commands from inside each directory.
+`server`, `tools/simulator` and `tools/bambu-bridge` are **separate Go modules**; there is no go.work, so run go commands from inside each directory.
 
 Data flow in `server/cmd/maskinsjekk/main.go`: `config.Load` (env vars) + `config.LoadMachines` (`machines.json`) → `store.Open` (migrates) + `SyncRegistry` → HTTP API (`internal/api`) and MQTT `ingest.Ingestor` run side by side, plus a `pruneLoop` for raw retention.
 
 - `ingest`: topic `hsd/<site>/<machine>/<sensor>`; JSON payload where **every numeric field becomes a metric** (new sensor types need no server change). Parsing (`parseSensorMessage`, `resolveEventTime`) is pure and fuzzed; bad messages are logged and dropped. Device `ts` is only trusted inside the sanity window, else arrival time is used. Shelly Gen2+ meters are the one native-format exception: sensors of kind `shelly-gen2` in `machines.json` map an `mqtt_prefix`/`channel` to a machine, and `parseShellyStatus` (`shelly.go`, also fuzzed) reads `<prefix>/status/switch:N|pm1:N`.
 - `store`: `InsertMeasurements` writes raw rows and maintains `measurements_1m` rollups in the same transaction; `Series` serves buckets ≥ 1 min from rollups, finer from raw. Machines file entries win over auto-registered placeholders.
 - The MQTT payload and HTTP shapes are the contract (see README.md); change them deliberately.
-- Planned (see ROADMAP.md): state machine from vibration → Shelly power ingest → jobs/kWh → dashboard → ntfy alerts. `state_events` and `jobs` tables already exist but are unpopulated.
+- Planned (see ROADMAP.md): state machine → power as primary signal → jobs/kWh → dashboard → ntfy alerts. `state_events` and `jobs` tables already exist but are unpopulated.
 
 ## Conventions
 

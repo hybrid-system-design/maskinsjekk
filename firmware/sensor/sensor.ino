@@ -27,15 +27,15 @@
 //
 // No credentials in code: everything lives in NVS and is set over the serial
 // console (115200 baud). Type `help`. Example first-time setup:
-//   set ssid MyWifi
-//   set pass secret
+//   set ssid <wifi-ssid>
+//   set pass <wifi-password>
 //   set mqtt_host fedora.local   # or a plain IP, e.g. 192.168.1.50
 //   set site demo
 //   set machine printer-1
 //   set sensor esp32-1
 //   set temp max6675
 //   set accel adxl335       # only for the analog GY-61; omit for I2C sensors
-//   set ota_pass secret     # enables network uploads
+//   set ota_pass <ota-password>  # enables network uploads
 //   reboot
 //
 // GY-61 / ADXL335 wiring (ADC1 pins only; ADC2 is unusable while WiFi is on):
